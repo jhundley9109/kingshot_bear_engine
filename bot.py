@@ -254,13 +254,18 @@ def merge_players(players):
 
 class BearTrapReviewView(discord.ui.View):
 
-    def __init__(self, data, players, source_message, submitted_by):
+    def __init__(
+        self, data, players, source_message, submitted_by,
+        existing_event_id=None
+    ):
         super().__init__(timeout=900)
         self.data = data
         self.players = players
         self.source_message = source_message
         self.submitted_by = submitted_by
+        self.existing_event_id = existing_event_id
         self.completed = False
+        self.replace_existing.disabled = existing_event_id is None
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.submitted_by:
@@ -275,26 +280,40 @@ class BearTrapReviewView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-    @discord.ui.button(label="Approve & Save", style=discord.ButtonStyle.success)
-    async def approve(self, interaction, button):
+    async def save_review(self, interaction, replace_existing=False):
         if self.completed:
             await interaction.response.send_message(
                 "This review has already been completed.", ephemeral=True
             )
             return
+        if self.existing_event_id and not replace_existing:
+            await interaction.response.send_message(
+                "⚠️ This matches an existing saved report. Use **Replace existing report** "
+                "to overwrite it, or Reject to discard this preview.",
+                ephemeral=True
+            )
+            return
 
         self.completed = True
         self.disable_buttons()
-
         try:
-            event_id = await asyncio.to_thread(
-                save_bear_result, self.data, self.players,
-                self.source_message, interaction.user.id
-            )
+            if replace_existing:
+                event_id = await asyncio.to_thread(
+                    replace_bear_result, self.existing_event_id, self.data,
+                    self.players, self.source_message, interaction.user.id
+                )
+                action = "replaced"
+            else:
+                event_id = await asyncio.to_thread(
+                    save_bear_result, self.data, self.players,
+                    self.source_message, interaction.user.id
+                )
+                action = "saved"
         except Exception as error:
             self.completed = False
             for child in self.children:
                 child.disabled = False
+            self.replace_existing.disabled = self.existing_event_id is None
             print("Error saving Bear Trap result:")
             print(error)
             await interaction.response.edit_message(
@@ -308,12 +327,22 @@ class BearTrapReviewView(discord.ui.View):
 
         await interaction.response.edit_message(
             content=(
-                "✅ **Bear Trap result saved!**\n"
+                f"✅ **Bear Trap result {action}!**\n"
                 f"Event ID: **{event_id}**\n"
                 f"Player rankings saved: **{len(self.players)}**"
             ),
             view=self
         )
+
+    @discord.ui.button(label="Approve & Save", style=discord.ButtonStyle.success)
+    async def approve(self, interaction, button):
+        await self.save_review(interaction)
+
+    @discord.ui.button(
+        label="Replace existing report", style=discord.ButtonStyle.secondary
+    )
+    async def replace_existing(self, interaction, button):
+        await self.save_review(interaction, replace_existing=True)
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
     async def reject(self, interaction, button):
@@ -322,7 +351,6 @@ class BearTrapReviewView(discord.ui.View):
                 "This review has already been completed.", ephemeral=True
             )
             return
-
         self.completed = True
         self.disable_buttons()
         await interaction.response.edit_message(
@@ -416,6 +444,11 @@ async def process_bear_trap(
             players
         )
 
+        existing_event_id = await asyncio.to_thread(
+            find_existing_report,
+            data,
+            message
+        )
 
         # Build the result message.
         lines = []
@@ -437,6 +470,11 @@ async def process_bear_trap(
         lines.append("")
 
         lines.append("**Event information:**")
+
+        if existing_event_id:
+            lines.append(
+                f"⚠️ Existing saved report detected: **Event ID {existing_event_id}**"
+            )
 
         event_type = data.get("event_type")
         event_date = data.get("event_date")
@@ -553,6 +591,11 @@ async def process_bear_trap(
             lines.append(
                 "🚫 **Not saved — resolve conflicting ranks and reprocess.**"
             )
+        elif existing_event_id:
+            lines.append(
+                "🔁 **A matching report exists — use Replace existing report "
+                "to overwrite it.**"
+            )
         else:
             lines.append("🔍 **Review this preview before saving.**")
 
@@ -579,7 +622,8 @@ async def process_bear_trap(
                 data,
                 merged_players,
                 message,
-                interaction.user.id
+                interaction.user.id,
+                existing_event_id
             )
 
         await interaction.followup.send(
@@ -608,7 +652,56 @@ DB_PATH = "data/beartrap.db"
 
 
 
-def save_bear_result(data, players, source_message, submitted_by):
+def find_existing_report(data, source_message):
+    connection = sqlite3.connect(DB_PATH)
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT id FROM events
+            WHERE discord_message_id = ? AND discord_channel_id = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (str(source_message.id), str(source_message.channel.id))
+        )
+        row = cursor.fetchone()
+
+        if row:
+            return row[0]
+
+        event_identity = (
+            data.get("event_type"),
+            data.get("event_date"),
+            data.get("event_time")
+        )
+
+        if all(event_identity):
+            cursor.execute(
+                """
+                SELECT id FROM events
+                WHERE event_type = ? AND event_date = ? AND event_time = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                event_identity
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return row[0]
+
+        return None
+    finally:
+        connection.close()
+
+
+def write_bear_result(
+    data,
+    players,
+    source_message,
+    submitted_by,
+    existing_event_id=None
+):
     if not players:
         raise ValueError("Cannot save a result with no player rankings.")
 
@@ -616,42 +709,56 @@ def save_bear_result(data, players, source_message, submitted_by):
 
     try:
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            INSERT INTO events (
-                event_type,
-                event_date,
-                event_time,
-                rallies,
-                alliance_damage,
-                submitted_by,
-                discord_message_id,
-                discord_channel_id,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                data.get("event_type") or "Unknown Bear Trap",
-                data.get("event_date"),
-                data.get("event_time"),
-                data.get("rallies"),
-                data.get("alliance_damage"),
-                str(submitted_by),
-                str(source_message.id),
-                str(source_message.channel.id),
-                datetime.now(timezone.utc).isoformat(timespec="seconds")
-            )
+        event_values = (
+            data.get("event_type") or "Unknown Bear Trap",
+            data.get("event_date"),
+            data.get("event_time"),
+            data.get("rallies"),
+            data.get("alliance_damage"),
+            str(submitted_by),
+            str(source_message.id),
+            str(source_message.channel.id),
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
         )
 
-        event_id = cursor.lastrowid
+        if existing_event_id is None:
+            cursor.execute(
+                """
+                INSERT INTO events (
+                    event_type, event_date, event_time, rallies,
+                    alliance_damage, submitted_by, discord_message_id,
+                    discord_channel_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                event_values
+            )
+            event_id = cursor.lastrowid
+        else:
+            cursor.execute(
+                """
+                UPDATE events SET
+                    event_type = ?, event_date = ?, event_time = ?,
+                    rallies = ?, alliance_damage = ?, submitted_by = ?,
+                    discord_message_id = ?, discord_channel_id = ?,
+                    created_at = ?
+                WHERE id = ?
+                """,
+                event_values + (existing_event_id,)
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError("The existing report could not be found.")
+
+            cursor.execute(
+                "DELETE FROM player_results WHERE event_id = ?",
+                (existing_event_id,)
+            )
+            event_id = existing_event_id
+
         cursor.executemany(
             """
             INSERT INTO player_results (
-                event_id,
-                rank,
-                player_name,
-                damage,
-                uncertain
+                event_id, rank, player_name, damage, uncertain
             ) VALUES (?, ?, ?, ?, ?)
             """,
             [
@@ -673,6 +780,31 @@ def save_bear_result(data, players, source_message, submitted_by):
         raise
     finally:
         connection.close()
+
+
+def save_bear_result(data, players, source_message, submitted_by):
+    return write_bear_result(
+        data,
+        players,
+        source_message,
+        submitted_by
+    )
+
+
+def replace_bear_result(
+    existing_event_id,
+    data,
+    players,
+    source_message,
+    submitted_by
+):
+    return write_bear_result(
+        data,
+        players,
+        source_message,
+        submitted_by,
+        existing_event_id
+    )
 
 
 def setup_database():
