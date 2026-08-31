@@ -831,12 +831,14 @@ async def bear_player_list(interaction: discord.Interaction):
     lines = [
         "🐻 **Canonical players**",
         "```text",
-        "ID    Player",
-        "----  ------------------------------",
+        "ID    Events  Player",
+        "----  ------  ------------------------------",
     ]
     for player in players:
         name = player.get_canonical_name().replace("`", "ˋ")
-        lines.append(f"{player.get_player_id():<4}  {name}")
+        lines.append(
+            f"{player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
+        )
 
     lines.append("```")
     if len(players) == 50:

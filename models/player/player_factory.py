@@ -32,7 +32,15 @@ class PlayerFactory:
             """)
             connection.commit()
         finally: connection.close()
-    def _to_model(self, row): return PlayerModel(row["id"], row["canonical_name"], row["created_at"], row["updated_at"])
+    def _to_model(self, row):
+        event_count = row["event_count"] if "event_count" in row.keys() else 0
+        return PlayerModel(
+            row["id"],
+            row["canonical_name"],
+            row["created_at"],
+            row["updated_at"],
+            event_count
+        )
     def _lookup(self, connection, sql, values):
         connection.row_factory = sqlite3.Row
         row = connection.execute(sql, values).fetchone()
@@ -83,7 +91,12 @@ class PlayerFactory:
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
             rows = connection.execute(
-                "SELECT * FROM players ORDER BY canonical_name ASC LIMIT ?",
+                """SELECT players.*, COUNT(DISTINCT player_results.event_id) AS event_count
+                   FROM players
+                   LEFT JOIN player_results ON player_results.player_id = players.id
+                   GROUP BY players.id
+                   ORDER BY players.canonical_name ASC
+                   LIMIT ?""",
                 (limit,)
             ).fetchall()
             return [self._to_model(row) for row in rows]
