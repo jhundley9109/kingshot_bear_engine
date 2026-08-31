@@ -143,3 +143,19 @@ class EventFactory:
                 (str(channel_id), since_date)
             ).fetchall()
         finally: connection.close()
+
+    def get_event_models_by_channel_id(self, channel_id, limit=50):
+        connection = self._connection_factory(); connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                """SELECT * FROM events WHERE discord_channel_id = ?
+                   ORDER BY event_date DESC, event_time DESC, id DESC LIMIT ?""",
+                (str(channel_id), limit)
+            ).fetchall()
+            return [self._to_model(row) for row in rows]
+        finally: connection.close()
+
+    def delete_event_model_by_id(self, event_id, connection):
+        cursor = connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        if cursor.rowcount != 1:
+            raise ValueError("The event could not be found.")

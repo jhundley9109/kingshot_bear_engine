@@ -44,3 +44,6 @@ class PlayerResultFactory:
                 ORDER BY players.canonical_name, events.event_date, events.event_time, events.id""",
                 (str(channel_id), pattern, since_date)).fetchall()
         finally: connection.close()
+
+    def delete_player_result_models_by_event_id(self, event_id, connection):
+        connection.execute("DELETE FROM player_results WHERE event_id = ?", (event_id,))

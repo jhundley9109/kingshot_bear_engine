@@ -81,6 +81,12 @@ bear_player_group = app_commands.Group(
 )
 bear_group.add_command(bear_player_group)
 
+bear_event_group = app_commands.Group(
+    name="event",
+    description="Bear Trap event reports and management"
+)
+bear_group.add_command(bear_event_group)
+
 
 # --------------------------------------------------
 # LOGGING
@@ -388,6 +394,49 @@ class BearTrapReviewView(discord.ui.View):
     async def on_timeout(self):
         if not self.completed:
             self.disable_buttons()
+
+
+class EventDeleteView(discord.ui.View):
+    def __init__(self, event_id, channel_id, requested_by):
+        super().__init__(timeout=900)
+        self.event_id = event_id
+        self.channel_id = channel_id
+        self.requested_by = requested_by
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.requested_by:
+            await interaction.response.send_message(
+                "❌ Only the user who requested this deletion can confirm it.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm delete", style=discord.ButtonStyle.danger)
+    async def confirm_delete(self, interaction, button):
+        try:
+            event = await asyncio.to_thread(
+                repository.delete_event,
+                self.event_id,
+                self.channel_id
+            )
+        except ValueError as error:
+            await interaction.response.edit_message(content=f"❌ {error}", view=None)
+            return
+        await interaction.response.edit_message(
+            content=(
+                f"🗑️ Deleted Event ID **{event.get_event_id()}** "
+                f"({event.get_event_date()} {event.get_event_time()})."
+            ),
+            view=None
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_delete(self, interaction, button):
+        await interaction.response.edit_message(
+            content="Deletion cancelled. Nothing was changed.",
+            view=None
+        )
 
 
 # --------------------------------------------------
@@ -900,7 +949,50 @@ async def bear_player_rename(
     )
 
 
-@bear_group.command(
+@bear_event_group.command(name="list", description="List saved events in this Bear channel")
+async def bear_event_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    events = await asyncio.to_thread(repository.fetch_events, interaction.channel_id, 50)
+    if not events:
+        await interaction.followup.send("🐻 No saved events in this channel.", ephemeral=True)
+        return
+    lines = ["🐻 **Saved events**", "```text", "ID    Date / Time           Rallies  Damage", "----  --------------------  -------  ----------------"]
+    for event in events:
+        timestamp = f"{event.get_event_date() or '-'} {event.get_event_time() or '-'}"
+        rallies = event.get_rallies() if event.get_rallies() is not None else "-"
+        damage = f"{event.get_alliance_damage():,}" if event.get_alliance_damage() is not None else "-"
+        lines.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
+    lines.append("```")
+    if len(events) == 50: lines.append("Showing the latest 50 events.")
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@bear_event_group.command(name="details", description="Show details for one event ID")
+async def bear_event_details(interaction: discord.Interaction, event_id: int):
+    await interaction.response.defer(thinking=True)
+    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, interaction.channel_id)
+    if event is None:
+        await interaction.followup.send("❌ No event with that ID exists in this channel.", ephemeral=True)
+        return
+    lines = [f"🐻 **Event ID {event.get_event_id()}**", f"Type: **{event.get_event_type()}**", f"Date: **{event.get_event_date()} {event.get_event_time()}**", f"Rallies: **{event.get_rallies() if event.get_rallies() is not None else 'Not found'}**", f"Alliance damage: **{event.get_alliance_damage():,}**" if event.get_alliance_damage() is not None else "Alliance damage: **Not found**", f"Participants: **{len(results)}**"]
+    await interaction.followup.send("\n".join(lines))
+
+
+@bear_event_group.command(name="delete", description="Delete a saved event after confirmation")
+async def bear_event_delete(interaction: discord.Interaction, event_id: int):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, interaction.channel_id)
+    if event is None:
+        await interaction.followup.send("❌ No event with that ID exists in this channel.", ephemeral=True)
+        return
+    await interaction.followup.send(
+        f"⚠️ Delete Event ID **{event_id}** with **{len(results)}** player results? This cannot be undone.",
+        ephemeral=True,
+        view=EventDeleteView(event_id, interaction.channel_id, interaction.user.id)
+    )
+
+
+@bear_event_group.command(
     name="trend",
     description="Chart event rallies, participation, and damage over time"
 )
