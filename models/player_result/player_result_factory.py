@@ -29,3 +29,18 @@ class PlayerResultFactory:
             names = connection.execute("""SELECT players.canonical_name AS player_name, COUNT(*) AS appearances, AVG(damage) AS average_damage, MAX(damage) AS best_damage FROM player_results JOIN events ON events.id = player_results.event_id JOIN players ON players.id = player_results.player_id WHERE events.discord_channel_id = ? AND players.canonical_name LIKE ? COLLATE NOCASE GROUP BY players.id ORDER BY appearances DESC, player_name ASC LIMIT 10""", (str(channel_id), pattern)).fetchall()
             history = connection.execute("""SELECT events.event_type, events.event_date, events.event_time, players.canonical_name AS player_name, player_results.rank, player_results.damage, player_results.uncertain FROM player_results JOIN events ON events.id = player_results.event_id JOIN players ON players.id = player_results.player_id WHERE events.discord_channel_id = ? AND players.canonical_name LIKE ? COLLATE NOCASE ORDER BY events.created_at DESC, events.id DESC, player_results.rank ASC LIMIT 10""", (str(channel_id), pattern)).fetchall(); return names, history
         finally: connection.close()
+
+    def get_player_trend_rows(self, channel_id, search_text, since_date):
+        connection = self._connection_factory(); connection.row_factory = sqlite3.Row
+        try:
+            pattern = f"%{search_text}%"
+            return connection.execute("""SELECT players.canonical_name AS player_name,
+                events.event_date, events.event_time, player_results.damage
+                FROM player_results JOIN events ON events.id = player_results.event_id
+                JOIN players ON players.id = player_results.player_id
+                WHERE events.discord_channel_id = ?
+                  AND players.canonical_name LIKE ? COLLATE NOCASE
+                  AND events.event_date >= ?
+                ORDER BY players.canonical_name, events.event_date, events.event_time, events.id""",
+                (str(channel_id), pattern, since_date)).fetchall()
+        finally: connection.close()

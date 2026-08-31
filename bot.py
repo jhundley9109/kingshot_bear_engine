@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import discord
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from discord import app_commands
 from discord.ext import commands
@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from data_access import BearTrapRepository
+from services.trend_chart_service import create_player_trend_chart
 
 
 # --------------------------------------------------
@@ -837,6 +838,50 @@ async def bear_player_rename(
         f"**{player.get_canonical_name()}**. Historical results will "
         "follow this player identity.",
         ephemeral=True
+    )
+
+
+@bear_player_group.command(
+    name="trend",
+    description="Chart a player's damage over the last one or three months"
+)
+async def bear_player_trend(
+    interaction: discord.Interaction,
+    name: str,
+    months: int = 1
+):
+    if months not in (1, 3):
+        await interaction.response.send_message(
+            "❌ Choose either `months: 1` or `months: 3`.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    since_date = (
+        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
+    ).isoformat()
+    rows = await asyncio.to_thread(
+        repository.fetch_player_trend,
+        interaction.channel_id,
+        name,
+        since_date
+    )
+
+    if not rows:
+        await interaction.followup.send(
+            f"🐻 No saved results for **{name}** in the last {months} month(s)."
+        )
+        return
+
+    chart = await asyncio.to_thread(
+        create_player_trend_chart,
+        rows,
+        months
+    )
+    await interaction.followup.send(
+        f"🐻 **{name} — last {months} month(s)**",
+        file=discord.File(chart, filename="bear-player-trend.png")
     )
 
 
