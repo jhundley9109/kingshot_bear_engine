@@ -2,13 +2,13 @@ import os
 import json
 import asyncio
 import discord
-import sqlite3
-from datetime import datetime, timezone
 
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from data_access import BearTrapRepository
 
 
 # --------------------------------------------------
@@ -60,19 +60,18 @@ async def on_ready():
 
 
 # --------------------------------------------------
-# TEST COMMAND
+# BEAR TRAP COMMAND GROUP
 # --------------------------------------------------
 
-@bot.tree.command(
+bear_group = app_commands.Group(
     name="bear",
-    description="Test the Bear Trap tracker",
+    description="Bear Trap reports and statistics"
+)
+
+bot.tree.add_command(
+    bear_group,
     guild=discord.Object(id=GUILD_ID)
 )
-async def bear(interaction: discord.Interaction):
-
-    await interaction.response.send_message(
-        "🐻 Bear Trap tracker is alive!"
-    )
 
 
 # --------------------------------------------------
@@ -299,13 +298,13 @@ class BearTrapReviewView(discord.ui.View):
         try:
             if replace_existing:
                 event_id = await asyncio.to_thread(
-                    replace_bear_result, self.existing_event_id, self.data,
+                    repository.replace_result, self.existing_event_id, self.data,
                     self.players, self.source_message, interaction.user.id
                 )
                 action = "replaced"
             else:
                 event_id = await asyncio.to_thread(
-                    save_bear_result, self.data, self.players,
+                    repository.save_result, self.data, self.players,
                     self.source_message, interaction.user.id
                 )
                 action = "saved"
@@ -445,7 +444,7 @@ async def process_bear_trap(
         )
 
         existing_event_id = await asyncio.to_thread(
-            find_existing_report,
+            repository.find_existing_report,
             data,
             message
         )
@@ -649,228 +648,135 @@ async def process_bear_trap(
 
 
 DB_PATH = "data/beartrap.db"
+repository = BearTrapRepository(DB_PATH)
+
+@bear_group.command(name="status", description="Check the Bear Trap tracker")
+async def bear_status(interaction: discord.Interaction):
+    await interaction.response.send_message("🐻 Bear Trap tracker is alive!")
 
 
+@bear_group.command(
+    name="summary",
+    description="Show the most recently saved Bear Trap report"
+)
+async def bear_summary(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    event, leaders = await asyncio.to_thread(repository.fetch_latest_summary)
 
-def find_existing_report(data, source_message):
-    connection = sqlite3.connect(DB_PATH)
-
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT id FROM events
-            WHERE discord_message_id = ? AND discord_channel_id = ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (str(source_message.id), str(source_message.channel.id))
+    if event is None:
+        await interaction.followup.send(
+            "🐻 No approved Bear Trap reports have been saved yet."
         )
-        row = cursor.fetchone()
+        return
 
-        if row:
-            return row[0]
+    lines = [
+        f"🐻 **{event['event_type']} summary**",
+        f"Event ID: **{event['id']}**",
+        f"Players: **{event['player_count']}**",
+    ]
 
-        event_identity = (
-            data.get("event_type"),
-            data.get("event_date"),
-            data.get("event_time")
-        )
+    if event["event_date"]:
+        event_label = event["event_date"]
+        if event["event_time"]:
+            event_label += f" {event['event_time']}"
+        lines.append(f"Date: **{event_label}**")
 
-        if all(event_identity):
-            cursor.execute(
-                """
-                SELECT id FROM events
-                WHERE event_type = ? AND event_date = ? AND event_time = ?
-                ORDER BY id DESC LIMIT 1
-                """,
-                event_identity
+    if event["rallies"] is not None:
+        lines.append(f"Rallies: **{event['rallies']:,}**")
+
+    if event["alliance_damage"] is not None:
+        lines.append(f"Alliance damage: **{event['alliance_damage']:,}**")
+
+    if event["uncertain_count"]:
+        lines.append(f"⚠️ Uncertain entries: **{event['uncertain_count']}**")
+
+    if leaders:
+        lines.append("")
+        lines.append("**Top 5**")
+        for player in leaders:
+            uncertain = " ⚠️" if player["uncertain"] else ""
+            lines.append(
+                f"{player['rank']}. {player['player_name']} — "
+                f"{player['damage']:,}{uncertain}"
             )
-            row = cursor.fetchone()
 
-            if row:
-                return row[0]
-
-        return None
-    finally:
-        connection.close()
+    await interaction.followup.send("\n".join(lines))
 
 
-def write_bear_result(
-    data,
-    players,
-    source_message,
-    submitted_by,
-    existing_event_id=None
+@bear_group.command(
+    name="leaderboard",
+    description="Rank players by total saved Bear Trap damage"
+)
+async def bear_leaderboard(
+    interaction: discord.Interaction,
+    limit: int = 10
 ):
+    limit = max(1, min(limit, 25))
+    await interaction.response.defer(thinking=True)
+    players = await asyncio.to_thread(repository.fetch_leaderboard, limit)
+
     if not players:
-        raise ValueError("Cannot save a result with no player rankings.")
+        await interaction.followup.send(
+            "🐻 No approved Bear Trap reports have been saved yet."
+        )
+        return
 
-    connection = sqlite3.connect(DB_PATH)
-
-    try:
-        cursor = connection.cursor()
-        event_values = (
-            data.get("event_type") or "Unknown Bear Trap",
-            data.get("event_date"),
-            data.get("event_time"),
-            data.get("rallies"),
-            data.get("alliance_damage"),
-            str(submitted_by),
-            str(source_message.id),
-            str(source_message.channel.id),
-            datetime.now(timezone.utc).isoformat(timespec="seconds")
+    lines = ["🐻 **Bear Trap leaderboard**"]
+    for position, player in enumerate(players, start=1):
+        lines.append(
+            f"**{position}.** {player['player_name']} — "
+            f"{player['total_damage']:,} total "
+            f"({player['appearances']} events, "
+            f"{player['average_damage']:,.0f} avg)"
         )
 
-        if existing_event_id is None:
-            cursor.execute(
-                """
-                INSERT INTO events (
-                    event_type, event_date, event_time, rallies,
-                    alliance_damage, submitted_by, discord_message_id,
-                    discord_channel_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                event_values
-            )
-            event_id = cursor.lastrowid
-        else:
-            cursor.execute(
-                """
-                UPDATE events SET
-                    event_type = ?, event_date = ?, event_time = ?,
-                    rallies = ?, alliance_damage = ?, submitted_by = ?,
-                    discord_message_id = ?, discord_channel_id = ?,
-                    created_at = ?
-                WHERE id = ?
-                """,
-                event_values + (existing_event_id,)
-            )
-
-            if cursor.rowcount != 1:
-                raise ValueError("The existing report could not be found.")
-
-            cursor.execute(
-                "DELETE FROM player_results WHERE event_id = ?",
-                (existing_event_id,)
-            )
-            event_id = existing_event_id
-
-        cursor.executemany(
-            """
-            INSERT INTO player_results (
-                event_id, rank, player_name, damage, uncertain
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    event_id,
-                    player["rank"],
-                    player["player_name"],
-                    player["damage"],
-                    int(player.get("uncertain", False))
-                )
-                for player in players
-            ]
-        )
-
-        connection.commit()
-        return event_id
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    await interaction.followup.send("\n".join(lines))
 
 
-def save_bear_result(data, players, source_message, submitted_by):
-    return write_bear_result(
-        data,
-        players,
-        source_message,
-        submitted_by
-    )
-
-
-def replace_bear_result(
-    existing_event_id,
-    data,
-    players,
-    source_message,
-    submitted_by
+@bear_group.command(
+    name="player",
+    description="Search a player's saved Bear Trap history"
+)
+async def bear_player(
+    interaction: discord.Interaction,
+    name: str
 ):
-    return write_bear_result(
-        data,
-        players,
-        source_message,
-        submitted_by,
-        existing_event_id
-    )
+    await interaction.response.defer(thinking=True)
+    players, history = await asyncio.to_thread(repository.fetch_player_history, name)
 
-
-def setup_database():
-
-    os.makedirs("data", exist_ok=True)
-
-    connection = sqlite3.connect(DB_PATH)
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            event_date TEXT,
-            rallies INTEGER,
-            alliance_damage INTEGER,
-            submitted_by TEXT,
-            created_at TEXT NOT NULL
+    if not players:
+        await interaction.followup.send(
+            f"🐻 No saved player results match **{name}**."
         )
-    """)
+        return
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS player_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id INTEGER NOT NULL,
-            rank INTEGER NOT NULL,
-            player_name TEXT NOT NULL,
-            damage INTEGER NOT NULL,
+    lines = [f"🐻 **Player search: {name}**"]
 
-            FOREIGN KEY (event_id)
-                REFERENCES events(id)
-        )
-    """)
+    if len(players) > 1:
+        lines.append("**Matching players**")
+        for player in players:
+            lines.append(
+                f"{player['player_name']} — {player['appearances']} events, "
+                f"{player['average_damage']:,.0f} avg, "
+                f"{player['best_damage']:,} best"
+            )
+        lines.append("")
 
-
-
-    event_columns = {
-        row[1]
-        for row in cursor.execute("PRAGMA table_info(events)")
-    }
-
-    if "event_time" not in event_columns:
-        cursor.execute("ALTER TABLE events ADD COLUMN event_time TEXT")
-
-    if "discord_message_id" not in event_columns:
-        cursor.execute(
-            "ALTER TABLE events ADD COLUMN discord_message_id TEXT"
+    lines.append("**Recent results**")
+    for result in history:
+        date_label = result["event_date"] or "Unknown date"
+        if result["event_time"]:
+            date_label += f" {result['event_time']}"
+        uncertain = " ⚠️" if result["uncertain"] else ""
+        lines.append(
+            f"{date_label} — {result['player_name']} "
+            f"#{result['rank']} — {result['damage']:,}{uncertain}"
         )
 
-    if "discord_channel_id" not in event_columns:
-        cursor.execute(
-            "ALTER TABLE events ADD COLUMN discord_channel_id TEXT"
-        )
+    await interaction.followup.send("\n".join(lines))
 
-    result_columns = {
-        row[1]
-        for row in cursor.execute("PRAGMA table_info(player_results)")
-    }
 
-    if "uncertain" not in result_columns:
-        cursor.execute(
-            "ALTER TABLE player_results "
-            "ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0"
-        )
-    connection.commit()
-    connection.close()
 
-setup_database()
+repository.setup()
+
 bot.run(DISCORD_TOKEN)
