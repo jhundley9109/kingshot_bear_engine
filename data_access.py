@@ -34,6 +34,7 @@ class BearTrapRepository:
                     submitted_by TEXT,
                     discord_message_id TEXT,
                     discord_channel_id TEXT,
+                    discord_channel_name TEXT,
                     created_at TEXT NOT NULL
                 )
             """)
@@ -57,6 +58,7 @@ class BearTrapRepository:
                 ("event_time", "TEXT"),
                 ("discord_message_id", "TEXT"),
                 ("discord_channel_id", "TEXT"),
+                ("discord_channel_name", "TEXT"),
             ):
                 if name not in event_columns:
                     cursor.execute(
@@ -104,9 +106,10 @@ class BearTrapRepository:
                     """
                     SELECT id FROM events
                     WHERE event_type = ? AND event_date = ? AND event_time = ?
+                        AND discord_channel_id = ?
                     ORDER BY id DESC LIMIT 1
                     """,
-                    event_identity
+                    event_identity + (str(source_message.channel.id),)
                 )
                 row = cursor.fetchone()
                 if row:
@@ -122,24 +125,31 @@ class BearTrapRepository:
         players,
         source_message,
         submitted_by,
+        submitted_at=None,
         existing_event_id=None
     ):
         if not players:
             raise ValueError("Cannot save a result with no player rankings.")
+
+        if submitted_at is None:
+            submitted_at = datetime.now(timezone.utc)
 
         connection = self.connect()
         try:
             cursor = connection.cursor()
             event_values = (
                 data.get("event_type") or "Unknown Bear Trap",
-                data.get("event_date"),
-                data.get("event_time"),
+                data.get("event_date") or submitted_at.date().isoformat(),
+                data.get("event_time") or submitted_at.time().replace(
+                    microsecond=0
+                ).isoformat(),
                 data.get("rallies"),
                 data.get("alliance_damage"),
                 str(submitted_by),
                 str(source_message.id),
                 str(source_message.channel.id),
-                datetime.now(timezone.utc).isoformat(timespec="seconds")
+                getattr(source_message.channel, "name", None),
+                submitted_at.isoformat(timespec="seconds")
             )
 
             if existing_event_id is None:
@@ -148,8 +158,8 @@ class BearTrapRepository:
                     INSERT INTO events (
                         event_type, event_date, event_time, rallies,
                         alliance_damage, submitted_by, discord_message_id,
-                        discord_channel_id, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        discord_channel_id, discord_channel_name, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     event_values
                 )
@@ -199,12 +209,20 @@ class BearTrapRepository:
         finally:
             connection.close()
 
-    def save_result(self, data, players, source_message, submitted_by):
+    def save_result(
+        self,
+        data,
+        players,
+        source_message,
+        submitted_by,
+        submitted_at=None
+    ):
         return self.write_result(
             data,
             players,
             source_message,
-            submitted_by
+            submitted_by,
+            submitted_at
         )
 
     def replace_result(
@@ -213,17 +231,19 @@ class BearTrapRepository:
         data,
         players,
         source_message,
-        submitted_by
+        submitted_by,
+        submitted_at=None
     ):
         return self.write_result(
             data,
             players,
             source_message,
             submitted_by,
+            submitted_at,
             existing_event_id
         )
 
-    def fetch_latest_summary(self):
+    def fetch_latest_summary(self, channel_id):
         connection = self.connect(row_factory=True)
         try:
             event = connection.execute(
@@ -235,10 +255,12 @@ class BearTrapRepository:
                 FROM events
                 LEFT JOIN player_results
                     ON player_results.event_id = events.id
+                WHERE events.discord_channel_id = ?
                 GROUP BY events.id
                 ORDER BY events.created_at DESC, events.id DESC
                 LIMIT 1
-                """
+                """,
+                (str(channel_id),)
             ).fetchone()
             if event is None:
                 return None, []
@@ -256,7 +278,7 @@ class BearTrapRepository:
         finally:
             connection.close()
 
-    def fetch_leaderboard(self, limit):
+    def fetch_leaderboard(self, channel_id, limit):
         connection = self.connect(row_factory=True)
         try:
             return connection.execute(
@@ -268,16 +290,18 @@ class BearTrapRepository:
                     AVG(damage) AS average_damage,
                     MAX(damage) AS best_damage
                 FROM player_results
+                JOIN events ON events.id = player_results.event_id
+                WHERE events.discord_channel_id = ?
                 GROUP BY player_name
                 ORDER BY total_damage DESC, average_damage DESC, player_name ASC
                 LIMIT ?
                 """,
-                (limit,)
+                (str(channel_id), limit)
             ).fetchall()
         finally:
             connection.close()
 
-    def fetch_player_history(self, search_text):
+    def fetch_player_history(self, channel_id, search_text):
         connection = self.connect(row_factory=True)
         try:
             pattern = f"%{search_text}%"
@@ -289,12 +313,14 @@ class BearTrapRepository:
                     AVG(damage) AS average_damage,
                     MAX(damage) AS best_damage
                 FROM player_results
+                JOIN events ON events.id = player_results.event_id
                 WHERE player_name LIKE ? COLLATE NOCASE
+                    AND events.discord_channel_id = ?
                 GROUP BY player_name
                 ORDER BY appearances DESC, player_name ASC
                 LIMIT 10
                 """,
-                (pattern,)
+                (pattern, str(channel_id))
             ).fetchall()
             history = connection.execute(
                 """
@@ -309,11 +335,12 @@ class BearTrapRepository:
                 FROM player_results
                 JOIN events ON events.id = player_results.event_id
                 WHERE player_results.player_name LIKE ? COLLATE NOCASE
+                    AND events.discord_channel_id = ?
                 ORDER BY events.created_at DESC, events.id DESC,
                     player_results.rank ASC
                 LIMIT 10
                 """,
-                (pattern,)
+                (pattern, str(channel_id))
             ).fetchall()
             return matching_names, history
         finally:

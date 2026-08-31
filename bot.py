@@ -264,13 +264,14 @@ class BearTrapReviewView(discord.ui.View):
 
     def __init__(
         self, data, players, source_message, submitted_by,
-        existing_event_id=None
+        submitted_at, existing_event_id=None
     ):
         super().__init__(timeout=900)
         self.data = data
         self.players = players
         self.source_message = source_message
         self.submitted_by = submitted_by
+        self.submitted_at = submitted_at
         self.existing_event_id = existing_event_id
         self.completed = False
         self.replace_existing.disabled = existing_event_id is None
@@ -308,13 +309,15 @@ class BearTrapReviewView(discord.ui.View):
             if replace_existing:
                 event_id = await asyncio.to_thread(
                     repository.replace_result, self.existing_event_id, self.data,
-                    self.players, self.source_message, interaction.user.id
+                    self.players, self.source_message, interaction.user.id,
+                    self.submitted_at
                 )
                 action = "replaced"
             else:
                 event_id = await asyncio.to_thread(
                     repository.save_result, self.data, self.players,
-                    self.source_message, interaction.user.id
+                    self.source_message, interaction.user.id,
+                    self.submitted_at
                 )
                 action = "saved"
         except Exception as error:
@@ -384,6 +387,7 @@ async def process_bear_trap(
     message: discord.Message
 ):
 
+    report_submitted_at = datetime.now(timezone.utc)
     log_event("Received Bear Trap processing request.")
 
     await interaction.response.defer(
@@ -632,6 +636,7 @@ async def process_bear_trap(
                 merged_players,
                 message,
                 interaction.user.id,
+                report_submitted_at,
                 existing_event_id
             )
 
@@ -671,7 +676,10 @@ async def bear_status(interaction: discord.Interaction):
 )
 async def bear_summary(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
-    event, leaders = await asyncio.to_thread(repository.fetch_latest_summary)
+    event, leaders = await asyncio.to_thread(
+        repository.fetch_latest_summary,
+        interaction.channel_id
+    )
 
     if event is None:
         await interaction.followup.send(
@@ -723,7 +731,11 @@ async def bear_leaderboard(
 ):
     limit = max(1, min(limit, 25))
     await interaction.response.defer(thinking=True)
-    players = await asyncio.to_thread(repository.fetch_leaderboard, limit)
+    players = await asyncio.to_thread(
+        repository.fetch_leaderboard,
+        interaction.channel_id,
+        limit
+    )
 
     if not players:
         await interaction.followup.send(
@@ -752,7 +764,11 @@ async def bear_player(
     name: str
 ):
     await interaction.response.defer(thinking=True)
-    players, history = await asyncio.to_thread(repository.fetch_player_history, name)
+    players, history = await asyncio.to_thread(
+        repository.fetch_player_history,
+        interaction.channel_id,
+        name
+    )
 
     if not players:
         await interaction.followup.send(
