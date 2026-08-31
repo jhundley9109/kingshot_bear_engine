@@ -74,6 +74,12 @@ bot.tree.add_command(
     guild=discord.Object(id=GUILD_ID)
 )
 
+bear_player_group = app_commands.Group(
+    name="player",
+    description="Player history and identity tools"
+)
+bear_group.add_command(bear_player_group)
+
 
 # --------------------------------------------------
 # LOGGING
@@ -676,7 +682,7 @@ async def bear_status(interaction: discord.Interaction):
 )
 async def bear_summary(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
-    event, leaders = await asyncio.to_thread(
+    event, players = await asyncio.to_thread(
         repository.fetch_latest_summary,
         interaction.channel_id
     )
@@ -687,35 +693,38 @@ async def bear_summary(interaction: discord.Interaction):
         )
         return
 
+    leaders = players[:5]
+
     lines = [
-        f"🐻 **{event['event_type']} summary**",
-        f"Event ID: **{event['id']}**",
-        f"Players: **{event['player_count']}**",
+        f"🐻 **{event.get_event_type()} summary**",
+        f"Event ID: **{event.get_event_id()}**",
+        f"Players: **{len(players)}**",
     ]
 
-    if event["event_date"]:
-        event_label = event["event_date"]
-        if event["event_time"]:
-            event_label += f" {event['event_time']}"
+    if event.get_event_date():
+        event_label = event.get_event_date()
+        if event.get_event_time():
+            event_label += f" {event.get_event_time()}"
         lines.append(f"Date: **{event_label}**")
 
-    if event["rallies"] is not None:
-        lines.append(f"Rallies: **{event['rallies']:,}**")
+    if event.get_rallies() is not None:
+        lines.append(f"Rallies: **{event.get_rallies():,}**")
 
-    if event["alliance_damage"] is not None:
-        lines.append(f"Alliance damage: **{event['alliance_damage']:,}**")
+    if event.get_alliance_damage() is not None:
+        lines.append(f"Alliance damage: **{event.get_alliance_damage():,}**")
 
-    if event["uncertain_count"]:
-        lines.append(f"⚠️ Uncertain entries: **{event['uncertain_count']}**")
+    uncertain_count = sum(player.get_uncertain() for player in players)
+    if uncertain_count:
+        lines.append(f"⚠️ Uncertain entries: **{uncertain_count}**")
 
     if leaders:
         lines.append("")
         lines.append("**Top 5**")
         for player in leaders:
-            uncertain = " ⚠️" if player["uncertain"] else ""
+            uncertain = " ⚠️" if player.get_uncertain() else ""
             lines.append(
-                f"{player['rank']}. {player['player_name']} — "
-                f"{player['damage']:,}{uncertain}"
+                f"{player.get_rank()}. {player.get_raw_player_name()} — "
+                f"{player.get_damage():,}{uncertain}"
             )
 
     await interaction.followup.send("\n".join(lines))
@@ -755,8 +764,8 @@ async def bear_leaderboard(
     await interaction.followup.send("\n".join(lines))
 
 
-@bear_group.command(
-    name="player",
+@bear_player_group.command(
+    name="search",
     description="Search a player's saved Bear Trap history"
 )
 async def bear_player(
@@ -801,6 +810,34 @@ async def bear_player(
 
     await interaction.followup.send("\n".join(lines))
 
+
+
+@bear_player_group.command(
+    name="rename",
+    description="Set a player's canonical name while preserving old aliases"
+)
+async def bear_player_rename(
+    interaction: discord.Interaction,
+    old_name: str,
+    new_name: str
+):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        player = await asyncio.to_thread(
+            repository.rename_player,
+            old_name,
+            new_name
+        )
+    except ValueError as error:
+        await interaction.followup.send(f"❌ {error}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"✅ Player ID **{player.get_player_id()}** is now named "
+        f"**{player.get_canonical_name()}**. Historical results will "
+        "follow this player identity.",
+        ephemeral=True
+    )
 
 
 repository.setup()
