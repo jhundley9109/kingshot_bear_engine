@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from data_access import BearTrapRepository
-from services.trend_chart_service import create_player_trend_chart
+from services.trend_chart_service import create_event_trend_chart, create_player_trend_chart
 
 
 # --------------------------------------------------
@@ -137,6 +137,15 @@ IMPORTANT RULES FOR EVENT INFORMATION:
 
 6. If any event-level information is not visible or cannot be read
    confidently, return null.
+
+7. One attachment may be a Mail / Success / Battle Overview screenshot.
+   It may show a timestamp banner, event text such as "[Hunting Trap 2]",
+   and the exact labels "Rallies:" and "Total Alliance Damage:".
+   Read those values as event metadata.
+
+8. Treat the Battle Overview's Total Alliance Damage as the authoritative
+   alliance_damage value. Do not derive it from a partial player-ranking
+   screenshot.
 
 IMPORTANT RULES FOR PLAYER RESULTS:
 
@@ -514,11 +523,27 @@ async def process_bear_trap(
         if rallies is not None:
             lines.append(f"🎯 Rallies: **{rallies:,}**")
 
+        extracted_player_damage = sum(
+            player["damage"]
+            for player in merged_players
+        )
+
         if alliance_damage is not None:
             lines.append(
                 f"💥 Alliance damage: "
                 f"**{alliance_damage:,}**"
             )
+            lines.append(
+                f"👥 Extracted player damage: "
+                f"**{extracted_player_damage:,}**"
+            )
+
+            difference = alliance_damage - extracted_player_damage
+            if difference:
+                lines.append(
+                    f"ℹ️ Difference: **{difference:,}** "
+                    "(likely rankings not included in the screenshots)"
+                )
 
         if (
             not event_type
@@ -872,6 +897,40 @@ async def bear_player_rename(
         f"**{player.get_canonical_name()}**. Historical results will "
         "follow this player identity.",
         ephemeral=True
+    )
+
+
+@bear_group.command(
+    name="trend",
+    description="Chart event rallies, participation, and damage over time"
+)
+async def bear_event_trend(interaction: discord.Interaction, months: int = 1):
+    if months not in (1, 3):
+        await interaction.response.send_message(
+            "❌ Choose either `months: 1` or `months: 3`.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    since_date = (
+        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
+    ).isoformat()
+    rows = await asyncio.to_thread(
+        repository.fetch_event_trend,
+        interaction.channel_id,
+        since_date
+    )
+    if not rows:
+        await interaction.followup.send(
+            f"🐻 No saved events in the last {months} month(s)."
+        )
+        return
+
+    chart = await asyncio.to_thread(create_event_trend_chart, rows, months)
+    await interaction.followup.send(
+        f"🐻 **Event trends — last {months} month(s)**",
+        file=discord.File(chart, filename="bear-event-trend.png")
     )
 
 

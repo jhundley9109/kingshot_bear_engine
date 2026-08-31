@@ -128,3 +128,18 @@ class EventFactory:
             if cursor.rowcount != 1:
                 raise ValueError("The existing report could not be found.")
         return event_model
+
+    def get_event_trend_rows(self, channel_id, since_date):
+        connection = self._connection_factory(); connection.row_factory = sqlite3.Row
+        try:
+            return connection.execute(
+                """SELECT events.event_date, events.event_time, events.rallies,
+                    events.alliance_damage, COUNT(player_results.id) AS participant_count
+                   FROM events
+                   LEFT JOIN player_results ON player_results.event_id = events.id
+                   WHERE events.discord_channel_id = ? AND events.event_date >= ?
+                   GROUP BY events.id
+                   ORDER BY events.event_date, events.event_time, events.id""",
+                (str(channel_id), since_date)
+            ).fetchall()
+        finally: connection.close()

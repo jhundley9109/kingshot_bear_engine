@@ -54,5 +54,6 @@ class BearTrapRepository:
         event=self.event_factory.get_latest_event_model_by_channel_id(channel_id)
         return (event, self.player_result_factory.get_player_result_models_by_event_id(event.get_event_id())) if event else (None, [])
     def fetch_leaderboard(self, channel_id, limit): return self.player_result_factory.get_leaderboard_rows(channel_id, limit)
+    def fetch_event_trend(self, channel_id, since_date): return self.event_factory.get_event_trend_rows(channel_id, since_date)
     def fetch_player_history(self, channel_id, search_text): return self.player_result_factory.get_player_search_rows(channel_id, search_text)
     def fetch_player_trend(self, channel_id, search_text, since_date): return self.player_result_factory.get_player_trend_rows(channel_id, search_text, since_date)
