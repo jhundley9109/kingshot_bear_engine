@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import discord
+from datetime import datetime, timezone
 
 from discord import app_commands
 from discord.ext import commands
@@ -72,6 +73,14 @@ bot.tree.add_command(
     bear_group,
     guild=discord.Object(id=GUILD_ID)
 )
+
+
+# --------------------------------------------------
+# LOGGING
+# --------------------------------------------------
+def log_event(message):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 # --------------------------------------------------
@@ -375,7 +384,12 @@ async def process_bear_trap(
     message: discord.Message
 ):
 
-    print("Received Bear Trap processing request.")
+    log_event("Received Bear Trap processing request.")
+
+    await interaction.response.defer(
+        ephemeral=True,
+        thinking=True
+    )
 
     # Find image attachments.
     images = [
@@ -407,20 +421,13 @@ async def process_bear_trap(
 
     if not images:
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ I couldn't find any images attached "
             "to that message.",
             ephemeral=True
         )
 
         return
-
-
-    # Tell Discord we are processing.
-    await interaction.response.defer(
-        ephemeral=True,
-        thinking=True
-    )
 
 
     try:
@@ -436,6 +443,8 @@ async def process_bear_trap(
             extract_bear_data,
             image_urls
         )
+
+        log_event("Received OpenAI Bear Trap extraction response.")
 
         players = data.get("players", [])
 
@@ -484,11 +493,12 @@ async def process_bear_trap(
         if event_type:
             lines.append(f"🐻 Event: **{event_type}**")
 
-        if event_date:
-            lines.append(f"📅 Date: **{event_date}**")
-
-        if event_time:
-            lines.append(f"🕒 Time: **{event_time}**")
+        lines.append(
+            f"📅 Date: **{event_date or 'Not found'}**"
+        )
+        lines.append(
+            f"🕒 Time: **{event_time or 'Not found'}**"
+        )
 
         if rallies is not None:
             lines.append(f"🎯 Rallies: **{rallies:,}**")
