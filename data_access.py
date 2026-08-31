@@ -49,6 +49,7 @@ class BearTrapRepository:
     def save_result(self, data, players, source_message, submitted_by, submitted_at=None): return self.write_result(data, players, source_message, submitted_by, submitted_at)
     def replace_result(self, existing_event_id, data, players, source_message, submitted_by, submitted_at=None): return self.write_result(data, players, source_message, submitted_by, submitted_at, existing_event_id)
     def rename_player(self, old_name, new_name): return self.player_factory.rename_player(old_name, new_name)
+    def fetch_players(self, limit=100): return self.player_factory.get_player_models(limit)
     def fetch_latest_summary(self, channel_id):
         event=self.event_factory.get_latest_event_model_by_channel_id(channel_id)
         return (event, self.player_result_factory.get_player_result_models_by_event_id(event.get_event_id())) if event else (None, [])

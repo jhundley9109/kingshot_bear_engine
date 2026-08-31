@@ -814,6 +814,38 @@ async def bear_player(
 
 
 @bear_player_group.command(
+    name="list",
+    description="List canonical players stored by the tracker"
+)
+async def bear_player_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    players = await asyncio.to_thread(repository.fetch_players, 50)
+
+    if not players:
+        await interaction.followup.send(
+            "🐻 No player identities have been saved yet.",
+            ephemeral=True
+        )
+        return
+
+    lines = [
+        "🐻 **Canonical players**",
+        "```text",
+        "ID    Player",
+        "----  ------------------------------",
+    ]
+    for player in players:
+        name = player.get_canonical_name().replace("`", "ˋ")
+        lines.append(f"{player.get_player_id():<4}  {name}")
+
+    lines.append("```")
+    if len(players) == 50:
+        lines.append("Showing the first 50 players.")
+
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@bear_player_group.command(
     name="rename",
     description="Set a player's canonical name while preserving old aliases"
 )

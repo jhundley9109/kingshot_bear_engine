@@ -78,3 +78,13 @@ class PlayerFactory:
             self._add_alias(player.get_player_id(), new_name, connection)
             connection.commit(); player.set_canonical_name(new_name); player.set_updated_at(now); return player
         finally: connection.close()
+
+    def get_player_models(self, limit=100):
+        connection = self._connection_factory(); connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT * FROM players ORDER BY canonical_name ASC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return [self._to_model(row) for row in rows]
+        finally: connection.close()
