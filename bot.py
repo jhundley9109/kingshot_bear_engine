@@ -78,47 +78,87 @@ async def bear(interaction: discord.Interaction):
 # --------------------------------------------------
 # AI EXTRACTION
 # --------------------------------------------------
-
 def extract_bear_data(image_urls):
 
     prompt = """
 You are reading screenshots from the mobile game Kingshot.
 
-The screenshots show a Hunting Trap 2 / Bear Trap damage ranking.
+The screenshots show results from a Hunting Trap event, also called
+Bear Trap.
 
-Your job is to extract ONLY the visible player ranking results.
+You may receive multiple screenshots from the SAME event.
 
-First, extract any event-level information visible in the
-screenshots:
+Some screenshots overlap and show duplicate player rankings.
 
+Your job is to extract:
+
+EVENT-LEVEL INFORMATION:
 - event_type
 - event_date
+- event_time
 - rallies
 - alliance_damage
 
-If something is not visible, return null.
+PLAYER RESULTS:
+For every visible player, extract:
+- rank
+- player_name
+- damage
 
-Then extract every visible player result.
+IMPORTANT RULES FOR EVENT INFORMATION:
 
-IMPORTANT RULES:
+1. event_type should be the event shown in the screenshot.
+   Example: "Bear Trap 2"
 
-1. Preserve the player's name exactly as displayed.
-2. Damage must be returned as a whole integer with no commas.
-3. Do not estimate damage.
-4. Do not invent players that are not visible.
-5. Some screenshots overlap and show the same rank more than once.
-   Extract every visible result from every screenshot anyway.
-6. Ignore icons, profile pictures, alliance banners, and decorative UI.
-7. If you are unsure about a name or damage number, return your best
-   reading and add "uncertain": true.
-8. Return ONLY valid JSON.
-9. Do not include markdown or explanations.
+2. Extract the event date exactly if visible.
+   Return it in YYYY-MM-DD format.
+
+3. Extract the event time if visible.
+   Return it in HH:MM:SS format.
+
+4. rallies must be a whole integer.
+
+5. alliance_damage must be a whole integer with no commas.
+
+6. If any event-level information is not visible or cannot be read
+   confidently, return null.
+
+IMPORTANT RULES FOR PLAYER RESULTS:
+
+1. Preserve the player's name as closely as possible to exactly how
+   it appears on screen.
+
+2. Do NOT autocorrect player names.
+
+3. Preserve capitalization, numbers, spaces, and unusual spellings.
+
+4. Do not replace unusual names with more common spellings.
+
+5. Damage must be returned as a whole integer with no commas.
+
+6. Do not estimate damage.
+
+7. Do not invent players that are not visible.
+
+8. Some screenshots overlap and show the same rank more than once.
+   Extract every visible result from every screenshot.
+
+9. Ignore profile pictures, icons, decorative UI, and alliance banners
+   unless they are part of the visible player name.
+
+10. If a player name or damage number is difficult to read, return your
+    best reading but set "uncertain": true.
+
+11. Return ONLY valid JSON.
+
+12. Do not include markdown or explanations.
 
 Use exactly this format:
 
 {
-  "event_type": "Bear Trap 2",
+  "event_type": null,
   "event_date": null,
+  "event_time": null,
   "rallies": null,
   "alliance_damage": null,
 
@@ -141,7 +181,6 @@ Use exactly this format:
     ]
 
     for url in image_urls:
-
         content.append(
             {
                 "type": "input_image",
@@ -304,6 +343,45 @@ async def process_bear_trap(
             f"👥 Unique rankings found: "
             f"**{len(merged_players)}**"
         )
+
+        lines.append("")
+
+        lines.append("**Event information:**")
+
+        event_type = data.get("event_type")
+        event_date = data.get("event_date")
+        event_time = data.get("event_time")
+        rallies = data.get("rallies")
+        alliance_damage = data.get("alliance_damage")
+
+        if event_type:
+            lines.append(f"🐻 Event: **{event_type}**")
+
+        if event_date:
+            lines.append(f"📅 Date: **{event_date}**")
+
+        if event_time:
+            lines.append(f"🕒 Time: **{event_time}**")
+
+        if rallies is not None:
+            lines.append(f"🎯 Rallies: **{rallies:,}**")
+
+        if alliance_damage is not None:
+            lines.append(
+                f"💥 Alliance damage: "
+                f"**{alliance_damage:,}**"
+            )
+
+        if (
+            not event_type
+            and not event_date
+            and not event_time
+            and rallies is None
+            and alliance_damage is None
+        ):
+            lines.append(
+                "⚠️ No event information was found."
+            )
 
         lines.append("")
 

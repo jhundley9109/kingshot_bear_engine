@@ -1,0 +1,12 @@
+---
+description: Remote Ubuntu deployment and testing environment for the Kingshot Bear Trap bot
+alwaysApply: true
+---
+
+# Deployment Environment
+
+- This repository is edited and reviewed locally, but the Discord bot runs on a remote Ubuntu server accessed over SSH.
+- Treat the server checkout at `~/bear-bot` as the runtime environment.
+- Do not claim the bot has been run or integration-tested locally unless it actually has.
+- For runtime verification, deploy the relevant source changes to the server, restart the bot there, and test through Discord.
+- Never print, commit, modify, or otherwise expose values from the server's `.env` file.
