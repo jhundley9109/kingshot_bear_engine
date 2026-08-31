@@ -3,7 +3,7 @@ import json
 import asyncio
 import discord
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from discord import app_commands
 from discord.ext import commands
@@ -247,6 +247,94 @@ def merge_players(players):
     return sorted_players, conflicts
 
 
+
+# --------------------------------------------------
+# APPROVAL WORKFLOW
+# --------------------------------------------------
+
+class BearTrapReviewView(discord.ui.View):
+
+    def __init__(self, data, players, source_message, submitted_by):
+        super().__init__(timeout=900)
+        self.data = data
+        self.players = players
+        self.source_message = source_message
+        self.submitted_by = submitted_by
+        self.completed = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.submitted_by:
+            await interaction.response.send_message(
+                "❌ Only the person who requested this preview can approve or reject it.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    def disable_buttons(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Approve & Save", style=discord.ButtonStyle.success)
+    async def approve(self, interaction, button):
+        if self.completed:
+            await interaction.response.send_message(
+                "This review has already been completed.", ephemeral=True
+            )
+            return
+
+        self.completed = True
+        self.disable_buttons()
+
+        try:
+            event_id = await asyncio.to_thread(
+                save_bear_result, self.data, self.players,
+                self.source_message, interaction.user.id
+            )
+        except Exception as error:
+            self.completed = False
+            for child in self.children:
+                child.disabled = False
+            print("Error saving Bear Trap result:")
+            print(error)
+            await interaction.response.edit_message(
+                content=(
+                    "❌ I couldn't save this result. No data was written; "
+                    "check the bot's terminal and try again."
+                ),
+                view=self
+            )
+            return
+
+        await interaction.response.edit_message(
+            content=(
+                "✅ **Bear Trap result saved!**\n"
+                f"Event ID: **{event_id}**\n"
+                f"Player rankings saved: **{len(self.players)}**"
+            ),
+            view=self
+        )
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction, button):
+        if self.completed:
+            await interaction.response.send_message(
+                "This review has already been completed.", ephemeral=True
+            )
+            return
+
+        self.completed = True
+        self.disable_buttons()
+        await interaction.response.edit_message(
+            content="🗑️ **Bear Trap result rejected.** Nothing was saved.",
+            view=self
+        )
+
+    async def on_timeout(self):
+        if not self.completed:
+            self.disable_buttons()
+
+
 # --------------------------------------------------
 # PROCESS BEAR TRAP MESSAGE
 # --------------------------------------------------
@@ -259,6 +347,8 @@ async def process_bear_trap(
     interaction: discord.Interaction,
     message: discord.Message
 ):
+
+    print("Received Bear Trap processing request.")
 
     # Find image attachments.
     images = [
@@ -458,9 +548,13 @@ async def process_bear_trap(
 
 
         lines.append("")
-        lines.append(
-            "🔍 **Preview only — not saved yet.**"
-        )
+
+        if conflicts:
+            lines.append(
+                "🚫 **Not saved — resolve conflicting ranks and reprocess.**"
+            )
+        else:
+            lines.append("🔍 **Review this preview before saving.**")
 
 
         result = "\n".join(lines)
@@ -478,11 +572,21 @@ async def process_bear_trap(
             )
 
 
+        review_view = None
+
+        if not conflicts:
+            review_view = BearTrapReviewView(
+                data,
+                merged_players,
+                message,
+                interaction.user.id
+            )
+
         await interaction.followup.send(
             result,
-            ephemeral=True
+            ephemeral=True,
+            view=review_view
         )
-
 
     except Exception as error:
 
@@ -501,6 +605,74 @@ async def process_bear_trap(
 
 
 DB_PATH = "data/beartrap.db"
+
+
+
+def save_bear_result(data, players, source_message, submitted_by):
+    if not players:
+        raise ValueError("Cannot save a result with no player rankings.")
+
+    connection = sqlite3.connect(DB_PATH)
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO events (
+                event_type,
+                event_date,
+                event_time,
+                rallies,
+                alliance_damage,
+                submitted_by,
+                discord_message_id,
+                discord_channel_id,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("event_type") or "Unknown Bear Trap",
+                data.get("event_date"),
+                data.get("event_time"),
+                data.get("rallies"),
+                data.get("alliance_damage"),
+                str(submitted_by),
+                str(source_message.id),
+                str(source_message.channel.id),
+                datetime.now(timezone.utc).isoformat(timespec="seconds")
+            )
+        )
+
+        event_id = cursor.lastrowid
+        cursor.executemany(
+            """
+            INSERT INTO player_results (
+                event_id,
+                rank,
+                player_name,
+                damage,
+                uncertain
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    event_id,
+                    player["rank"],
+                    player["player_name"],
+                    player["damage"],
+                    int(player.get("uncertain", False))
+                )
+                for player in players
+            ]
+        )
+
+        connection.commit()
+        return event_id
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def setup_database():
@@ -535,6 +707,36 @@ def setup_database():
         )
     """)
 
+
+
+    event_columns = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(events)")
+    }
+
+    if "event_time" not in event_columns:
+        cursor.execute("ALTER TABLE events ADD COLUMN event_time TEXT")
+
+    if "discord_message_id" not in event_columns:
+        cursor.execute(
+            "ALTER TABLE events ADD COLUMN discord_message_id TEXT"
+        )
+
+    if "discord_channel_id" not in event_columns:
+        cursor.execute(
+            "ALTER TABLE events ADD COLUMN discord_channel_id TEXT"
+        )
+
+    result_columns = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(player_results)")
+    }
+
+    if "uncertain" not in result_columns:
+        cursor.execute(
+            "ALTER TABLE player_results "
+            "ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0"
+        )
     connection.commit()
     connection.close()
 
