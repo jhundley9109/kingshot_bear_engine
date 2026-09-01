@@ -2,6 +2,8 @@ import os
 import json
 import asyncio
 import discord
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from discord import app_commands
@@ -236,6 +238,12 @@ Use exactly this format:
 # MERGE DUPLICATES
 # --------------------------------------------------
 
+def player_match_name(name):
+    normalized = unicodedata.normalize("NFKC", str(name)).casefold()
+    normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
+    return " ".join(normalized.split())
+
+
 def merge_players(players):
 
     merged = {}
@@ -255,7 +263,8 @@ def merge_players(players):
 
             # Same information = harmless duplicate.
             if (
-                existing["player_name"] == player["player_name"]
+                player_match_name(existing["player_name"])
+                == player_match_name(player["player_name"])
                 and existing["damage"] == player["damage"]
             ):
                 continue
@@ -412,8 +421,13 @@ class EventDeleteView(discord.ui.View):
             return False
         return True
 
+    def disable_buttons(self):
+        for child in self.children:
+            child.disabled = True
+
     @discord.ui.button(label="Confirm delete", style=discord.ButtonStyle.danger)
     async def confirm_delete(self, interaction, button):
+        self.disable_buttons()
         try:
             event = await asyncio.to_thread(
                 repository.delete_event,
@@ -421,21 +435,22 @@ class EventDeleteView(discord.ui.View):
                 self.channel_id
             )
         except ValueError as error:
-            await interaction.response.edit_message(content=f"❌ {error}", view=None)
+            await interaction.response.edit_message(content=f"❌ {error}", view=self)
             return
         await interaction.response.edit_message(
             content=(
                 f"🗑️ Deleted Event ID **{event.get_event_id()}** "
                 f"({event.get_event_date()} {event.get_event_time()})."
             ),
-            view=None
+            view=self
         )
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_delete(self, interaction, button):
+        self.disable_buttons()
         await interaction.response.edit_message(
             content="Deletion cancelled. Nothing was changed.",
-            view=None
+            view=self
         )
 
 
@@ -721,10 +736,15 @@ async def process_bear_trap(
                 existing_event_id
             )
 
+        send_options = {
+            "ephemeral": True
+        }
+        if review_view is not None:
+            send_options["view"] = review_view
+
         await interaction.followup.send(
             result,
-            ephemeral=True,
-            view=review_view
+            **send_options
         )
 
     except Exception as error:
@@ -746,6 +766,29 @@ async def process_bear_trap(
 DB_PATH = "data/beartrap.db"
 repository = BearTrapRepository(DB_PATH)
 
+
+def resolve_report_channel_id(interaction, channel=None, all_channels=False):
+    if all_channels:
+        return None
+    if channel is not None:
+        return channel.id
+    return interaction.channel_id
+
+
+def report_scope_label(interaction, channel=None, all_channels=False):
+    if all_channels:
+        return "all Bear channels"
+    selected = channel or interaction.channel
+    channel_name = getattr(selected, "name", None)
+    if channel_name:
+        return f"#{channel_name}"
+    return "this channel"
+
+
+def channel_label(value):
+    return value or "unknown-channel"
+
+
 @bear_group.command(name="status", description="Check the Bear Trap tracker")
 async def bear_status(interaction: discord.Interaction):
     await interaction.response.send_message("🐻 Bear Trap tracker is alive!")
@@ -755,16 +798,26 @@ async def bear_status(interaction: discord.Interaction):
     name="summary",
     description="Show the most recently saved Bear Trap report"
 )
-async def bear_summary(interaction: discord.Interaction):
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Show the latest report across all Bear channels"
+)
+async def bear_summary(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
     await interaction.response.defer(thinking=True)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
     event, players = await asyncio.to_thread(
         repository.fetch_latest_summary,
-        interaction.channel_id
+        channel_id
     )
 
     if event is None:
         await interaction.followup.send(
-            "🐻 No approved Bear Trap reports have been saved yet."
+            f"🐻 No approved Bear Trap reports have been saved for {scope} yet."
         )
         return
 
@@ -773,6 +826,7 @@ async def bear_summary(interaction: discord.Interaction):
     lines = [
         f"🐻 **{event.get_event_type()} summary**",
         f"Event ID: **{event.get_event_id()}**",
+        f"Channel: **#{channel_label(event.get_discord_channel_name())}**",
         f"Players: **{len(players)}**",
     ]
 
@@ -805,62 +859,138 @@ async def bear_summary(interaction: discord.Interaction):
     await interaction.followup.send("\n".join(lines))
 
 
+def _table_text(value, width):
+    value = str(value).replace("`", "'")
+    if len(value) <= width:
+        return value
+    return value[: width - 3] + "..."
+
+
+def _damage_text(value):
+    return f"{int(value or 0):,}"
+
+
+def _has_rtl_text(value):
+    return any(unicodedata.bidirectional(char) in {"R", "AL", "AN"} for char in value)
+
+
+def _table_name_cell(value, width):
+    value = _table_text(value, width)
+    padding = " " * max(0, width - len(value))
+    if _has_rtl_text(value):
+        return f"{padding}\u2067{value}\u2069"
+    return f"{padding}{value}"
+
+
+def _leaderboard_table_chunks(players, max_message_length=1900):
+    header = (
+        f"{'#':>3}  {'Player':>24}  {'Events':>6}  "
+        f"{'Total Damage':>16}  {'Avg/Event':>14}  {'Best':>16}"
+    )
+    separator = (
+        f"{'-' * 3}  {'-' * 24}  {'-' * 6}  "
+        f"{'-' * 16}  {'-' * 14}  {'-' * 16}"
+    )
+    chunks = []
+    current = ["```text", header, separator]
+
+    for position, player in enumerate(players, start=1):
+        row = (
+            f"{position:>3}  "
+            f"{_table_name_cell(player['player_name'], 24)}  "
+            f"{player['appearances']:>6}  "
+            f"{_damage_text(player['total_damage']):>16}  "
+            f"{_damage_text(player['average_damage']):>14}  "
+            f"{_damage_text(player['best_damage']):>16}"
+        )
+        candidate = "\n".join(current + [row, "```"])
+        if len(candidate) > max_message_length and len(current) > 3:
+            current.append("```")
+            chunks.append("\n".join(current))
+            current = ["```text", header, separator]
+        current.append(row)
+
+    current.append("```")
+    chunks.append("\n".join(current))
+    return chunks
+
+
 @bear_group.command(
     name="leaderboard",
     description="Rank players by total saved Bear Trap damage"
 )
+@app_commands.describe(
+    limit="Maximum players to show. Use 0 or leave blank for all players.",
+    channel="Optional Bear channel to read from",
+    all_channels="Rank players across all Bear channels"
+)
 async def bear_leaderboard(
     interaction: discord.Interaction,
-    limit: int = 10
+    limit: int = 0,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
 ):
-    limit = max(1, min(limit, 25))
+    limit = max(0, min(limit, 100))
+    row_limit = limit or None
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
     await interaction.response.defer(thinking=True)
     players = await asyncio.to_thread(
         repository.fetch_leaderboard,
-        interaction.channel_id,
-        limit
+        channel_id,
+        row_limit
     )
 
     if not players:
         await interaction.followup.send(
-            "🐻 No approved Bear Trap reports have been saved yet."
+            f"🐻 No approved Bear Trap reports have been saved for {scope} yet."
         )
         return
 
-    lines = ["🐻 **Bear Trap leaderboard**"]
-    for position, player in enumerate(players, start=1):
-        lines.append(
-            f"**{position}.** {player['player_name']} — "
-            f"{player['total_damage']:,} total "
-            f"({player['appearances']} events, "
-            f"{player['average_damage']:,.0f} avg)"
-        )
+    total_events = players[0]["total_events"] or 0
+    title = (
+        f"🐻 **Bear Trap leaderboard for {scope}** — {len(players)} players, "
+        f"{total_events} saved events"
+    )
+    if limit:
+        title += f" showing top {limit}"
 
-    await interaction.followup.send("\n".join(lines))
+    chunks = _leaderboard_table_chunks(players)
+    await interaction.followup.send(f"{title}\n{chunks[0]}")
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk)
 
 
 @bear_player_group.command(
     name="search",
     description="Search a player's saved Bear Trap history"
 )
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Search across all Bear channels"
+)
 async def bear_player(
     interaction: discord.Interaction,
-    name: str
+    name: str,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
 ):
     await interaction.response.defer(thinking=True)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
     players, history = await asyncio.to_thread(
         repository.fetch_player_history,
-        interaction.channel_id,
+        channel_id,
         name
     )
 
     if not players:
         await interaction.followup.send(
-            f"🐻 No saved player results match **{name}**."
+            f"🐻 No saved player results match **{name}** for {scope}."
         )
         return
 
-    lines = [f"🐻 **Player search: {name}**"]
+    lines = [f"🐻 **Player search: {name}**", f"Scope: **{scope}**"]
 
     if len(players) > 1:
         lines.append("**Matching players**")
@@ -877,9 +1007,12 @@ async def bear_player(
         date_label = result["event_date"] or "Unknown date"
         if result["event_time"]:
             date_label += f" {result['event_time']}"
+        channel_prefix = ""
+        if all_channels:
+            channel_prefix = f"#{channel_label(result['discord_channel_name'])} — "
         uncertain = " ⚠️" if result["uncertain"] else ""
         lines.append(
-            f"{date_label} — {result['player_name']} "
+            f"{channel_prefix}{date_label} — {result['player_name']} "
             f"#{result['rank']} — {result['damage']:,}{uncertain}"
         )
 
@@ -949,46 +1082,90 @@ async def bear_player_rename(
     )
 
 
-@bear_event_group.command(name="list", description="List saved events in this Bear channel")
-async def bear_event_list(interaction: discord.Interaction):
+@bear_event_group.command(name="list", description="List saved events")
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="List events from all Bear channels"
+)
+async def bear_event_list(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    events = await asyncio.to_thread(repository.fetch_events, interaction.channel_id, 50)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
+    events = await asyncio.to_thread(repository.fetch_events, channel_id, 50)
     if not events:
-        await interaction.followup.send("🐻 No saved events in this channel.", ephemeral=True)
+        await interaction.followup.send(f"🐻 No saved events for {scope}.", ephemeral=True)
         return
-    lines = ["🐻 **Saved events**", "```text", "ID    Date / Time           Rallies  Damage", "----  --------------------  -------  ----------------"]
+    lines = [f"🐻 **Saved events for {scope}**", "```text"]
+    if all_channels:
+        lines.extend([
+            "Channel             ID    Date / Time           Rallies  Damage",
+            "------------------  ----  --------------------  -------  ----------------"
+        ])
+    else:
+        lines.extend([
+            "ID    Date / Time           Rallies  Damage",
+            "----  --------------------  -------  ----------------"
+        ])
     for event in events:
         timestamp = f"{event.get_event_date() or '-'} {event.get_event_time() or '-'}"
         rallies = event.get_rallies() if event.get_rallies() is not None else "-"
         damage = f"{event.get_alliance_damage():,}" if event.get_alliance_damage() is not None else "-"
-        lines.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
+        if all_channels:
+            name = _table_text(channel_label(event.get_discord_channel_name()), 18)
+            lines.append(f"{name:<18}  {event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
+        else:
+            lines.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
     lines.append("```")
     if len(events) == 50: lines.append("Showing the latest 50 events.")
     await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
 @bear_event_group.command(name="details", description="Show details for one event ID")
-async def bear_event_details(interaction: discord.Interaction, event_id: int):
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Allow looking up an event from any Bear channel"
+)
+async def bear_event_details(
+    interaction: discord.Interaction,
+    event_id: int,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
     await interaction.response.defer(thinking=True)
-    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, interaction.channel_id)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, channel_id)
     if event is None:
-        await interaction.followup.send("❌ No event with that ID exists in this channel.", ephemeral=True)
+        await interaction.followup.send("❌ No event with that ID exists in that scope.", ephemeral=True)
         return
-    lines = [f"🐻 **Event ID {event.get_event_id()}**", f"Type: **{event.get_event_type()}**", f"Date: **{event.get_event_date()} {event.get_event_time()}**", f"Rallies: **{event.get_rallies() if event.get_rallies() is not None else 'Not found'}**", f"Alliance damage: **{event.get_alliance_damage():,}**" if event.get_alliance_damage() is not None else "Alliance damage: **Not found**", f"Participants: **{len(results)}**"]
+    lines = [f"🐻 **Event ID {event.get_event_id()}**", f"Channel: **#{channel_label(event.get_discord_channel_name())}**", f"Type: **{event.get_event_type()}**", f"Date: **{event.get_event_date()} {event.get_event_time()}**", f"Rallies: **{event.get_rallies() if event.get_rallies() is not None else 'Not found'}**", f"Alliance damage: **{event.get_alliance_damage():,}**" if event.get_alliance_damage() is not None else "Alliance damage: **Not found**", f"Participants: **{len(results)}**"]
     await interaction.followup.send("\n".join(lines))
 
 
 @bear_event_group.command(name="delete", description="Delete a saved event after confirmation")
-async def bear_event_delete(interaction: discord.Interaction, event_id: int):
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Allow deleting an event from any Bear channel by event ID"
+)
+async def bear_event_delete(
+    interaction: discord.Interaction,
+    event_id: int,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, interaction.channel_id)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    event, results = await asyncio.to_thread(repository.fetch_event_details, event_id, channel_id)
     if event is None:
-        await interaction.followup.send("❌ No event with that ID exists in this channel.", ephemeral=True)
+        await interaction.followup.send("❌ No event with that ID exists in that scope.", ephemeral=True)
         return
     await interaction.followup.send(
-        f"⚠️ Delete Event ID **{event_id}** with **{len(results)}** player results? This cannot be undone.",
+        f"⚠️ Delete Event ID **{event_id}** from **#{channel_label(event.get_discord_channel_name())}** with **{len(results)}** player results? This cannot be undone.",
         ephemeral=True,
-        view=EventDeleteView(event_id, interaction.channel_id, interaction.user.id)
+        view=EventDeleteView(event_id, channel_id, interaction.user.id)
     )
 
 
@@ -996,44 +1173,15 @@ async def bear_event_delete(interaction: discord.Interaction, event_id: int):
     name="trend",
     description="Chart event rallies, participation, and damage over time"
 )
-async def bear_event_trend(interaction: discord.Interaction, months: int = 1):
-    if months not in (1, 3):
-        await interaction.response.send_message(
-            "❌ Choose either `months: 1` or `months: 3`.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(thinking=True)
-    since_date = (
-        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
-    ).isoformat()
-    rows = await asyncio.to_thread(
-        repository.fetch_event_trend,
-        interaction.channel_id,
-        since_date
-    )
-    if not rows:
-        await interaction.followup.send(
-            f"🐻 No saved events in the last {months} month(s)."
-        )
-        return
-
-    chart = await asyncio.to_thread(create_event_trend_chart, rows, months)
-    await interaction.followup.send(
-        f"🐻 **Event trends — last {months} month(s)**",
-        file=discord.File(chart, filename="bear-event-trend.png")
-    )
-
-
-@bear_player_group.command(
-    name="trend",
-    description="Chart a player's damage over the last one or three months"
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Chart events across all Bear channels"
 )
-async def bear_player_trend(
+async def bear_event_trend(
     interaction: discord.Interaction,
-    name: str,
-    months: int = 1
+    months: int = 1,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
 ):
     if months not in (1, 3):
         await interaction.response.send_message(
@@ -1043,29 +1191,78 @@ async def bear_player_trend(
         return
 
     await interaction.response.defer(thinking=True)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
+    since_date = (
+        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
+    ).isoformat()
+    rows = await asyncio.to_thread(
+        repository.fetch_event_trend,
+        channel_id,
+        since_date
+    )
+    if not rows:
+        await interaction.followup.send(
+            f"🐻 No saved events for {scope} in the last {months} month(s)."
+        )
+        return
+
+    chart = await asyncio.to_thread(create_event_trend_chart, rows, months)
+    await interaction.followup.send(
+        f"🐻 **Event trends for {scope} — last {months} month(s)**",
+        file=discord.File(chart, filename="bear-event-trend.png")
+    )
+
+
+@bear_player_group.command(
+    name="trend",
+    description="Chart a player's damage over the last one or three months"
+)
+@app_commands.describe(
+    channel="Optional Bear channel to read from",
+    all_channels="Chart player results across all Bear channels"
+)
+async def bear_player_trend(
+    interaction: discord.Interaction,
+    name: str,
+    months: int = 1,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
+    if months not in (1, 3):
+        await interaction.response.send_message(
+            "❌ Choose either `months: 1` or `months: 3`.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
     since_date = (
         datetime.now(timezone.utc).date() - timedelta(days=months * 30)
     ).isoformat()
     rows = await asyncio.to_thread(
         repository.fetch_player_trend,
-        interaction.channel_id,
+        channel_id,
         name,
         since_date
     )
 
     if not rows:
         await interaction.followup.send(
-            f"🐻 No saved results for **{name}** in the last {months} month(s)."
+            f"🐻 No saved results for **{name}** in {scope} in the last {months} month(s)."
         )
         return
 
     chart = await asyncio.to_thread(
         create_player_trend_chart,
         rows,
-        months
+        months,
+        name
     )
     await interaction.followup.send(
-        f"🐻 **{name} — last {months} month(s)**",
+        f"🐻 **{name} in {scope} — last {months} month(s)**",
         file=discord.File(chart, filename="bear-player-trend.png")
     )
 

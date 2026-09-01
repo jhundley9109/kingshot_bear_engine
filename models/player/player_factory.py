@@ -1,4 +1,5 @@
 import difflib
+import re
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
@@ -7,10 +8,19 @@ from .player_model import PlayerModel
 class PlayerFactory:
     def __init__(self, connection_factory): self._connection_factory = connection_factory
     @staticmethod
-    def normalize_name(name): return " ".join(unicodedata.normalize("NFKC", name).casefold().split())
+    def normalize_name(name):
+        normalized = unicodedata.normalize("NFKC", name).casefold()
+        normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
+        return " ".join(normalized.split())
+    @staticmethod
+    def legacy_normalize_name(name):
+        return " ".join(unicodedata.normalize("NFKC", name).casefold().split())
     @classmethod
     def visual_key(cls, name):
         return cls.normalize_name(name).translate(str.maketrans({"o":"0", "i":"1", "l":"1"}))
+    @classmethod
+    def legacy_visual_key(cls, name):
+        return cls.legacy_normalize_name(name).translate(str.maketrans({"o":"0", "i":"1", "l":"1"}))
     def setup_schema(self):
         connection = self._connection_factory()
         try:
@@ -49,12 +59,25 @@ class PlayerFactory:
         normalized = self.normalize_name(parsed_name)
         player = self._lookup(connection, """SELECT players.* FROM players JOIN player_aliases ON player_aliases.player_id = players.id WHERE player_aliases.normalized_name = ?""", (normalized,))
         if player: return player
+        legacy_normalized = self.legacy_normalize_name(parsed_name)
+        if legacy_normalized != normalized:
+            player = self._lookup(connection, """SELECT players.* FROM players JOIN player_aliases ON player_aliases.player_id = players.id WHERE player_aliases.normalized_name = ?""", (legacy_normalized,))
+            if player:
+                self._add_alias(player.get_player_id(), parsed_name, connection)
+                return player
         key = self.visual_key(parsed_name)
         rows = connection.execute("SELECT DISTINCT player_id FROM player_aliases WHERE visual_key = ?", (key,)).fetchall()
         if len(rows) == 1:
             player = self.get_player_model_by_player_id(rows[0][0], connection)
             self._add_alias(player.get_player_id(), parsed_name, connection)
             return player
+        legacy_key = self.legacy_visual_key(parsed_name)
+        if legacy_key != key:
+            rows = connection.execute("SELECT DISTINCT player_id FROM player_aliases WHERE visual_key = ?", (legacy_key,)).fetchall()
+            if len(rows) == 1:
+                player = self.get_player_model_by_player_id(rows[0][0], connection)
+                self._add_alias(player.get_player_id(), parsed_name, connection)
+                return player
         candidates = connection.execute("SELECT player_id, alias_name FROM player_aliases").fetchall()
         scores = [(difflib.SequenceMatcher(None, key, self.visual_key(row[1])).ratio(), row[0]) for row in candidates]
         scores.sort(reverse=True)

@@ -58,15 +58,20 @@ class EventFactory:
             if owns_connection:
                 connection.close()
 
-    def get_latest_event_model_by_channel_id(self, channel_id):
+    def get_latest_event_model_by_channel_id(self, channel_id=None):
         connection = self._connection_factory()
         connection.row_factory = sqlite3.Row
         try:
-            row = connection.execute(
-                """SELECT * FROM events WHERE discord_channel_id = ?
-                   ORDER BY created_at DESC, id DESC LIMIT 1""",
-                (str(channel_id),)
-            ).fetchone()
+            if channel_id is None:
+                row = connection.execute(
+                    "SELECT * FROM events ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT * FROM events WHERE discord_channel_id = ?
+                       ORDER BY created_at DESC, id DESC LIMIT 1""",
+                    (str(channel_id),)
+                ).fetchone()
             return self._to_model(row) if row else None
         finally:
             connection.close()
@@ -132,26 +137,40 @@ class EventFactory:
     def get_event_trend_rows(self, channel_id, since_date):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
+            where = "events.event_date >= ?"
+            params = [since_date]
+            if channel_id is not None:
+                where = "events.discord_channel_id = ? AND " + where
+                params.insert(0, str(channel_id))
             return connection.execute(
-                """SELECT events.event_date, events.event_time, events.rallies,
-                    events.alliance_damage, COUNT(player_results.id) AS participant_count
+                f"""SELECT events.event_date, events.event_time, events.rallies,
+                    events.alliance_damage, events.discord_channel_name,
+                    COUNT(player_results.id) AS participant_count
                    FROM events
                    LEFT JOIN player_results ON player_results.event_id = events.id
-                   WHERE events.discord_channel_id = ? AND events.event_date >= ?
+                   WHERE {where}
                    GROUP BY events.id
                    ORDER BY events.event_date, events.event_time, events.id""",
-                (str(channel_id), since_date)
+                params
             ).fetchall()
         finally: connection.close()
 
-    def get_event_models_by_channel_id(self, channel_id, limit=50):
+    def get_event_models_by_channel_id(self, channel_id=None, limit=50):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
-            rows = connection.execute(
-                """SELECT * FROM events WHERE discord_channel_id = ?
-                   ORDER BY event_date DESC, event_time DESC, id DESC LIMIT ?""",
-                (str(channel_id), limit)
-            ).fetchall()
+            if channel_id is None:
+                rows = connection.execute(
+                    """SELECT * FROM events
+                       ORDER BY discord_channel_name ASC,
+                       event_date DESC, event_time DESC, id DESC LIMIT ?""",
+                    (limit,)
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM events WHERE discord_channel_id = ?
+                       ORDER BY event_date DESC, event_time DESC, id DESC LIMIT ?""",
+                    (str(channel_id), limit)
+                ).fetchall()
             return [self._to_model(row) for row in rows]
         finally: connection.close()
 

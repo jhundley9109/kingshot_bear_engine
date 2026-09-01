@@ -50,21 +50,21 @@ class BearTrapRepository:
     def replace_result(self, existing_event_id, data, players, source_message, submitted_by, submitted_at=None): return self.write_result(data, players, source_message, submitted_by, submitted_at, existing_event_id)
     def rename_player(self, old_name, new_name): return self.player_factory.rename_player(old_name, new_name)
     def fetch_players(self, limit=100): return self.player_factory.get_player_models(limit)
-    def fetch_latest_summary(self, channel_id):
+    def fetch_latest_summary(self, channel_id=None):
         event=self.event_factory.get_latest_event_model_by_channel_id(channel_id)
         return (event, self.player_result_factory.get_player_result_models_by_event_id(event.get_event_id())) if event else (None, [])
     def fetch_leaderboard(self, channel_id, limit): return self.player_result_factory.get_leaderboard_rows(channel_id, limit)
     def fetch_event_trend(self, channel_id, since_date): return self.event_factory.get_event_trend_rows(channel_id, since_date)
-    def fetch_events(self, channel_id, limit=50): return self.event_factory.get_event_models_by_channel_id(channel_id, limit)
-    def fetch_event_details(self, event_id, channel_id):
+    def fetch_events(self, channel_id=None, limit=50): return self.event_factory.get_event_models_by_channel_id(channel_id, limit)
+    def fetch_event_details(self, event_id, channel_id=None):
         event = self.event_factory.get_event_model_by_event_id(event_id)
-        if event is None or event.get_discord_channel_id() != str(channel_id): return None, []
+        if event is None or (channel_id is not None and event.get_discord_channel_id() != str(channel_id)): return None, []
         return event, self.player_result_factory.get_player_result_models_by_event_id(event_id)
-    def delete_event(self, event_id, channel_id):
+    def delete_event(self, event_id, channel_id=None):
         connection = self.connect()
         try:
             event = self.event_factory.get_event_model_by_event_id(event_id, connection)
-            if event is None or event.get_discord_channel_id() != str(channel_id):
+            if event is None or (channel_id is not None and event.get_discord_channel_id() != str(channel_id)):
                 raise ValueError("No event with that ID exists in this channel.")
             self.player_result_factory.delete_player_result_models_by_event_id(event_id, connection)
             self.event_factory.delete_event_model_by_id(event_id, connection)

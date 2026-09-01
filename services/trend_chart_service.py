@@ -3,7 +3,7 @@ from datetime import datetime
 from io import BytesIO
 
 
-def create_player_trend_chart(rows, months):
+def create_player_trend_chart(rows, months, searched_name=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -20,7 +20,8 @@ def create_player_trend_chart(rows, months):
         dates, damage = zip(*points)
         axis.plot(dates, damage, marker="o", linewidth=2, label=player_name)
 
-    axis.set_title(f"Bear Trap damage — last {months} month(s)")
+    title_name = searched_name or "Player"
+    axis.set_title(f"{title_name} Bear Trap damage - last {months} month(s)")
     axis.set_xlabel("Event date")
     axis.set_ylabel("Damage")
     axis.grid(alpha=0.25)
