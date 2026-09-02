@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord import app_commands
 
-from commands.support import prepare_report_scope
+from commands.support import log_discord_request, prepare_report_scope
 from services.discord_formatting import (
     channel_label,
     code_table_chunks,
@@ -54,6 +54,7 @@ def register_root_commands(
     group, repository, openai_client, bot_owner_ids, log_event
 ):
     @group.command(name="status", description="Check the Bear Trap tracker")
+    @log_discord_request(log_event, "/bear status")
     async def status(interaction: discord.Interaction):
         await interaction.response.send_message("🐻 Bear Trap tracker is alive!")
 
@@ -66,6 +67,7 @@ def register_root_commands(
         all_channels="Show the latest report across this server",
         all_servers="Owner only: include every configured server",
     )
+    @log_discord_request(log_event, "/bear summary")
     async def summary(
         interaction: discord.Interaction,
         channel: discord.TextChannel = None,
@@ -131,6 +133,7 @@ def register_root_commands(
         all_channels="Rank players across this server",
         all_servers="Owner only: rank across every configured server",
     )
+    @log_discord_request(log_event, "/bear leaderboard")
     async def leaderboard(
         interaction: discord.Interaction,
         limit: int = 0,
@@ -185,6 +188,7 @@ def register_root_commands(
         all_channels="Include recent events across this server",
         all_servers="Owner only: include every configured server",
     )
+    @log_discord_request(log_event, "/bear recap")
     async def recap(
         interaction: discord.Interaction,
         events: int = 5,

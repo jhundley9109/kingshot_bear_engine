@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import discord
 from discord import app_commands
 
+from commands.support import log_discord_request
 from services.extraction_review_service import (
     build_extraction_preview,
     extract_bear_data,
@@ -21,12 +22,12 @@ def register_process_command(
     log_event,
 ):
     @app_commands.context_menu(name="Process Bear Trap")
+    @log_discord_request(log_event, "Process Bear Trap")
     async def process_bear_trap(
         interaction: discord.Interaction,
         message: discord.Message,
     ):
         report_submitted_at = datetime.now(timezone.utc)
-        log_event("Received Bear Trap processing request.")
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         images = find_image_attachments(message.attachments)

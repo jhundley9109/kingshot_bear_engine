@@ -79,11 +79,13 @@ register_player_commands(
     repository,
     bot,
     BOT_OWNER_IDS,
+    log_event,
 )
 register_event_commands(
     bear_event_group,
     repository,
     BOT_OWNER_IDS,
+    log_event,
 )
 bot.tree.add_command(bear_group, guilds=configured_guilds)
 register_process_command(

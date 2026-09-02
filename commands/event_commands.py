@@ -3,7 +3,11 @@ import asyncio
 import discord
 from discord import app_commands
 
-from commands.support import prepare_report_scope, prepare_trend_since_date
+from commands.support import (
+    log_discord_request,
+    prepare_report_scope,
+    prepare_trend_since_date,
+)
 from services.discord_formatting import (
     channel_label,
     code_table_chunks,
@@ -15,13 +19,14 @@ from services.trend_chart_service import create_event_trend_chart
 from views.review_views import EventDeleteView
 
 
-def register_event_commands(group, repository, bot_owner_ids):
+def register_event_commands(group, repository, bot_owner_ids, log_event):
     @group.command(name="list", description="List saved events")
     @app_commands.describe(
         channel="Optional Bear channel to read from",
         all_channels="List events from this server",
         all_servers="Owner only: list events from every configured server",
     )
+    @log_discord_request(log_event, "/bear event list")
     async def list_events(
         interaction: discord.Interaction,
         channel: discord.TextChannel = None,
@@ -117,6 +122,7 @@ def register_event_commands(group, repository, bot_owner_ids):
         all_channels="Allow lookup across this server",
         all_servers="Owner only: allow lookup across every server",
     )
+    @log_discord_request(log_event, "/bear event details")
     async def details(
         interaction: discord.Interaction,
         event_id: int,
@@ -166,6 +172,7 @@ def register_event_commands(group, repository, bot_owner_ids):
         all_channels="Allow deletion lookup across this server",
         all_servers="Owner only: allow deletion lookup across every server",
     )
+    @log_discord_request(log_event, "/bear event delete")
     async def delete(
         interaction: discord.Interaction,
         event_id: int,
@@ -217,6 +224,7 @@ def register_event_commands(group, repository, bot_owner_ids):
         all_channels="Chart events across this server",
         all_servers="Owner only: chart across every configured server",
     )
+    @log_discord_request(log_event, "/bear event trend")
     async def trend(
         interaction: discord.Interaction,
         months: int = 1,

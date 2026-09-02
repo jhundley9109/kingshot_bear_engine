@@ -3,7 +3,11 @@ import asyncio
 import discord
 from discord import app_commands
 
-from commands.support import prepare_report_scope, prepare_trend_since_date
+from commands.support import (
+    log_discord_request,
+    prepare_report_scope,
+    prepare_trend_since_date,
+)
 from services.discord_formatting import (
     code_table_chunks,
     guild_label,
@@ -59,7 +63,7 @@ def _player_stats_chunks(
     )
 
 
-def register_player_commands(group, repository, bot, bot_owner_ids):
+def register_player_commands(group, repository, bot, bot_owner_ids, log_event):
     @group.command(
         name="search",
         description="Search a player's saved Bear Trap history",
@@ -69,6 +73,7 @@ def register_player_commands(group, repository, bot, bot_owner_ids):
         all_channels="Search across this server",
         all_servers="Owner only: search every configured server",
     )
+    @log_discord_request(log_event, "/bear player search")
     async def search(
         interaction: discord.Interaction,
         name: str,
@@ -134,6 +139,7 @@ def register_player_commands(group, repository, bot, bot_owner_ids):
         all_channels="Include events across this server",
         all_servers="Owner only: include every configured server",
     )
+    @log_discord_request(log_event, "/bear player stats")
     async def stats(
         interaction: discord.Interaction,
         playername: str,
@@ -172,6 +178,7 @@ def register_player_commands(group, repository, bot, bot_owner_ids):
     @app_commands.describe(
         all_servers="Owner only: list players from every configured server"
     )
+    @log_discord_request(log_event, "/bear player list")
     async def list_players(
         interaction: discord.Interaction,
         all_servers: bool = False,
@@ -241,6 +248,7 @@ def register_player_commands(group, repository, bot, bot_owner_ids):
         name="rename",
         description="Set a player's canonical name while preserving old aliases",
     )
+    @log_discord_request(log_event, "/bear player rename")
     async def rename(
         interaction: discord.Interaction,
         old_name: str,
@@ -274,6 +282,7 @@ def register_player_commands(group, repository, bot, bot_owner_ids):
         all_channels="Chart player results across this server",
         all_servers="Owner only: chart across every configured server",
     )
+    @log_discord_request(log_event, "/bear player trend")
     async def trend(
         interaction: discord.Interaction,
         name: str,

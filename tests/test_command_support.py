@@ -4,7 +4,11 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from commands.support import prepare_report_scope, prepare_trend_since_date
+from commands.support import (
+    log_discord_request,
+    prepare_report_scope,
+    prepare_trend_since_date,
+)
 
 
 def interaction(user_id=1, channel_name="bear-1", guild_name="Alliance"):
@@ -19,6 +23,23 @@ def interaction(user_id=1, channel_name="bear-1", guild_name="Alliance"):
 
 
 class CommandSupportTests(unittest.TestCase):
+    def test_log_discord_request_records_command_function_and_context(self):
+        messages = []
+
+        @log_discord_request(messages.append, "/bear summary")
+        async def summary(current_interaction):
+            return "handled"
+
+        result = asyncio.run(summary(interaction(user_id=42)))
+
+        self.assertEqual(result, "handled")
+        self.assertEqual(len(messages), 1)
+        self.assertIn("command=/bear summary", messages[0])
+        self.assertIn("function=summary", messages[0])
+        self.assertIn("user_id=42", messages[0])
+        self.assertIn("guild_id=20", messages[0])
+        self.assertIn("channel_id=10", messages[0])
+
     def test_prepare_report_scope_defaults_to_current_channel(self):
         current = interaction()
 

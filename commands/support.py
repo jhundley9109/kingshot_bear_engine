@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,25 @@ class ReportScope:
     label: str
     all_channels: bool
     all_servers: bool
+
+
+def log_discord_request(log_event, command_name):
+    def decorator(function):
+        @wraps(function)
+        async def wrapped(interaction, *args, **kwargs):
+            user_id = getattr(getattr(interaction, "user", None), "id", None)
+            guild_id = getattr(interaction, "guild_id", None)
+            channel_id = getattr(interaction, "channel_id", None)
+            log_event(
+                f"Discord request command={command_name} "
+                f"function={function.__name__} user_id={user_id or 'unknown'} "
+                f"guild_id={guild_id or 'dm'} channel_id={channel_id or 'unknown'}"
+            )
+            return await function(interaction, *args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 async def prepare_report_scope(
