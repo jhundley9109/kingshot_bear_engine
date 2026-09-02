@@ -83,6 +83,71 @@ class PlayerResultFactory:
                 player_results.rank ASC LIMIT 10""", params).fetchall(); return names, history
         finally: connection.close()
 
+    def get_player_stats_rows(self, channel_id, player_name):
+        connection = self._connection_factory(); connection.row_factory = sqlite3.Row
+        try:
+            normalized_name = self._normalize_player_name(player_name)
+            matches = connection.execute(
+                """SELECT DISTINCT players.id, players.canonical_name
+                   FROM players
+                   JOIN player_aliases ON player_aliases.player_id = players.id
+                   WHERE player_aliases.normalized_name = ?
+                      OR players.canonical_name = ? COLLATE NOCASE
+                   ORDER BY players.canonical_name ASC""",
+                (normalized_name, player_name.strip())
+            ).fetchall()
+            if not matches:
+                return None, []
+
+            player = matches[0]
+            where = "player_results.player_id = ?"
+            params = [player["id"]]
+            if channel_id is not None:
+                where += " AND events.discord_channel_id = ?"
+                params.append(str(channel_id))
+
+            summary = connection.execute(
+                f"""SELECT players.canonical_name AS player_name,
+                    COUNT(DISTINCT player_results.event_id) AS appearances,
+                    COALESCE(SUM(player_results.damage), 0) AS total_damage,
+                    COALESCE(AVG(player_results.damage), 0) AS average_damage,
+                    COALESCE(MAX(player_results.damage), 0) AS best_damage,
+                    COALESCE(MIN(player_results.rank), 0) AS best_rank
+                    FROM player_results
+                    JOIN events ON events.id = player_results.event_id
+                    JOIN players ON players.id = player_results.player_id
+                    WHERE {where}
+                    GROUP BY players.id""",
+                params
+            ).fetchone()
+            if summary is None:
+                return None, []
+
+            history = connection.execute(
+                f"""SELECT events.id AS event_id, events.event_type,
+                    events.event_date, events.event_time,
+                    events.discord_channel_name, player_results.rank,
+                    player_results.damage, player_results.uncertain
+                    FROM player_results
+                    JOIN events ON events.id = player_results.event_id
+                    WHERE {where}
+                    ORDER BY events.event_date DESC, events.event_time DESC,
+                    events.id DESC""",
+                params
+            ).fetchall()
+            return summary, history
+        finally: connection.close()
+
+    @staticmethod
+    def _normalize_player_name(name):
+        # Kept in sync with PlayerFactory.normalize_name without coupling the
+        # result factory to the player factory instance.
+        import re
+        import unicodedata
+        normalized = unicodedata.normalize("NFKC", name).casefold()
+        normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
+        return " ".join(normalized.split())
+
     def get_player_trend_rows(self, channel_id, search_text, since_date):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:

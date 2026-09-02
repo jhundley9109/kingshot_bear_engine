@@ -1,97 +1,34 @@
-# Kingshot Bear Trap Discord Bot - Project Handoff
+# Kingshot Bear Engine - Application Guide
 
-## Project Overview
+## Purpose
 
-This is a custom Discord bot for a Kingshot alliance that tracks player performance in the game's **Hunting Trap**, commonly referred to by the alliance as **Bear Trap**.
+Kingshot Bear Engine is a Discord bot for tracking Kingshot Hunting Trap, also called Bear Trap, performance from screenshots.
 
-The immediate focus is **Bear Trap 2**, but the architecture should eventually support Bear Trap 1 and other event types.
+The game does not provide a clean export for Bear Trap rankings, so the bot accepts screenshots in Discord, uses OpenAI vision to extract structured data, lets the user review the parsed results, and stores approved reports in SQLite for later reporting.
 
-The main problem being solved is that Kingshot does not provide an easy way to export Bear Trap rankings as text. The results are primarily available as screenshots.
+The app supports multiple Bear events by tying saved reports to the Discord channel where they were processed. For example, `#bear-trap-1` and `#bear-trap-2` are tracked separately by default, while reporting commands can also query a selected channel or all saved Bear channels.
 
-The bot therefore uses:
+## Runtime Environment
 
-1. Discord for report submission
-2. OpenAI vision to read screenshots
-3. Structured JSON extraction
-4. Validation and duplicate merging
-5. SQLite for historical storage
-6. Discord for displaying summaries and statistics
+The bot is intended to run on the remote Ubuntu server over SSH.
 
----
-
-# Current Workflow
-
-The current workflow is:
+Typical runtime location:
 
 ```text
-User uploads multiple Bear Trap screenshots
-        |
-        v
-Screenshots are attached to ONE Discord message
-        |
-        v
-User right-clicks the message
-        |
-        v
-Apps -> Process Bear Trap
-        |
-        v
-Discord bot receives the message attachments
-        |
-        v
-OpenAI Vision processes all screenshots together
-        |
-        v
-Structured player data is returned
-        |
-        v
-Python merges duplicate ranks from overlapping screenshots
-        |
-        v
-Bot displays an ephemeral preview
+/home/jhundley/git/kingshot_bear_bot
 ```
 
-The current version DOES NOT permanently save results yet.
-
----
-
-# Current Environment
-
-Development is being done directly on an Ubuntu server over SSH.
-
-Project location:
+Local development/review may happen in:
 
 ```text
-~/bear-bot
+/Users/jhundley/git/kingshot_bear_engine
 ```
 
-Current structure is approximately:
+Do not assume local macOS runs are equivalent to the Ubuntu runtime. Local syntax checks are fine, but bot runtime behavior should be validated on the Ubuntu server.
 
-```text
-bear-bot/
-├── .env
-├── .git/
-├── .gitignore
-├── bot.py
-├── requirements.txt
-├── HANDOFF.md
-├── data/
-└── venv/
-```
+## Environment Variables
 
-Important:
-
-- `.env` is NOT committed
-- `venv/` is NOT committed
-- `data/` is NOT committed
-- Git repository is configured and pushed to GitHub
-- GitHub remote configuration is already working
-
----
-
-# Environment Variables
-
-The `.env` file contains:
+The `.env` file is required and must not be committed.
 
 ```env
 DISCORD_TOKEN=...
@@ -99,101 +36,89 @@ OPENAI_API_KEY=...
 GUILD_ID=...
 ```
 
-Do not expose, print, commit, or modify these secrets.
+`DISCORD_TOKEN` is the Discord bot token.
 
-`GUILD_ID` is the Discord server ID used for guild-specific command syncing during development.
+`OPENAI_API_KEY` is used for screenshot parsing.
 
----
+`GUILD_ID` is the Discord server ID where guild-scoped slash/context-menu commands are synced.
 
-# Python Dependencies
+To run the same bot on a different Discord server, update `GUILD_ID`, invite the bot to that server, and restart the process. Only change `DISCORD_TOKEN` if switching to a different Discord application/bot.
 
-The project currently uses:
+## Running The Bot
 
-```text
-discord.py
-openai
-python-dotenv
-aiosqlite
-```
-
-The installed environment may contain additional packages captured in `requirements.txt`.
-
-Activate the virtual environment with:
+Activate the venv and start the process:
 
 ```bash
-cd ~/bear-bot
+cd /home/jhundley/git/kingshot_bear_bot
 source venv/bin/activate
+python3 bot.py
 ```
 
-Run the bot with:
+To keep it running after SSH disconnects:
 
 ```bash
-python bot.py
+cd /home/jhundley/git/kingshot_bear_bot
+source venv/bin/activate
+mkdir -p logs
+nohup python3 bot.py >> logs/bot.log 2>&1 &
 ```
 
-Stop the bot with:
+Tail logs:
+
+```bash
+tail -f logs/bot.log
+```
+
+Find the running process:
+
+```bash
+ps aux | grep '[p]ython3 bot.py'
+```
+
+Stop it:
+
+```bash
+pkill -f 'python3 bot.py'
+```
+
+## High-Level Workflow
 
 ```text
-Ctrl+C
+User uploads Bear screenshots to a Discord message
+        |
+        v
+User runs Apps -> Process Bear Trap on that message
+        |
+        v
+Bot collects image attachments
+        |
+        v
+OpenAI extracts event metadata and player results as JSON
+        |
+        v
+Bot merges duplicate screenshot overlap and detects conflicts
+        |
+        v
+Bot shows an ephemeral review message
+        |
+        v
+User clicks Approve & Save, Replace existing report, or Reject
+        |
+        v
+Approved data is written to SQLite
 ```
 
----
+The bot logs when it receives a processing request and when the OpenAI extraction response returns.
 
-# Current Discord Bot Features
+## Screenshot Parsing
 
-## Slash Command
-
-The following command works:
-
-```text
-/bear
-```
-
-Expected response:
-
-```text
-🐻 Bear Trap tracker is alive!
-```
-
-This confirms that:
-
-- Discord token is valid
-- Bot is online
-- Application commands are syncing correctly
-- Guild ID is correct
-
----
-
-# Current Screenshot Processing
-
-The bot has a Discord message context-menu command:
+The context-menu command is:
 
 ```text
 Process Bear Trap
 ```
 
-Workflow:
-
-1. User posts one Discord message
-2. The message contains multiple Bear Trap screenshots as attachments
-3. User right-clicks the message
-4. User selects:
-
-```text
-Apps -> Process Bear Trap
-```
-
-5. The bot collects image attachments
-6. The bot sends the images to OpenAI
-7. The bot extracts ranking data
-8. The bot displays an ephemeral preview
-
-The current attachment handling checks:
-
-- Discord attachment `content_type`
-- Image file extensions as a fallback
-
-Supported extensions currently include:
+It accepts image attachments using Discord attachment content types, with filename extension fallback for:
 
 ```text
 .png
@@ -202,245 +127,7 @@ Supported extensions currently include:
 .webp
 ```
 
----
-
-# Screenshot Characteristics
-
-Kingshot reports are spread across multiple screenshots.
-
-Important behavior:
-
-- Screenshots can overlap
-- The same player/rank may appear in multiple screenshots
-- The player's own ranking may be pinned at the bottom of screenshots
-- The pinned player may therefore appear repeatedly
-- Player names can include:
-  - alliance tags such as `[XuX]`
-  - spaces
-  - capitalization
-  - numbers
-  - special characters
-  - Arabic characters
-  - unusual spelling
-- Damage values are large integers
-
-The bot currently sends all screenshots together in one OpenAI request.
-
-Example rankings:
-
-```text
-1. [XuX]INCREDIBLE HoSSy — 1,746,978,512
-2. [XuX]MountainMan — 1,502,037,235
-3. [XuX]annak — 1,082,223,708
-4. [XuX]Scarlettbgonya — 944,101,284
-5. [XuX]DeviconB — 767,368,184
-...
-12. [XuX]El Beef Chalupa — 452,453,767
-```
-
----
-
-# Current OpenAI Extraction
-
-The bot currently sends a detailed prompt requesting structured JSON.
-
-The intended output format is:
-
-```json
-{
-  "players": [
-    {
-      "rank": 1,
-      "player_name": "[XuX]INCREDIBLE HoSSy",
-      "damage": 1746978512,
-      "uncertain": false
-    }
-  ]
-}
-```
-
-The bot then parses:
-
-```python
-json.loads(response.output_text)
-```
-
-The OpenAI request is blocking, so the Discord async handler runs it using:
-
-```python
-await asyncio.to_thread(
-    extract_bear_data,
-    image_urls
-)
-```
-
-This prevents the blocking API request from freezing the Discord event loop.
-
-The current model configured in `bot.py` is:
-
-```python
-model="gpt-5"
-```
-
-The model receives all screenshot URLs as image inputs in a single request.
-
----
-
-# Current Extraction Results
-
-The first real test used four screenshots.
-
-The bot extracted 19 unique rankings successfully.
-
-Example output:
-
-```text
-🐻 Bear Trap data extracted!
-
-📸 Screenshots processed: 4
-👥 Unique rankings found: 19
-
-Results found:
-
-1. [XuX]INCREDIBLE HoSSy — 1,746,978,512
-2. [XuX]MountainMan — 1,502,037,235
-3. [XuX]annak — 1,082,223,708
-4. [XuX]Scarlettbgonya — 944,101,284
-5. [XuX]DeyiconB — 767,368,184
-6. [XuX]QueenBee — 708,954,229
-7. [XuX]HECTO15 — 611,351,532
-8. [XuX]Geras699 — 579,620,657 ⚠️
-9. [XuX]Dhamms — 547,229,752
-10. [XuX]Scotty Boy — 496,738,856
-11. [XuX]Ranger1181 — 491,572,262
-12. [XuX]El Beef Chalupa — 452,453,767
-13. [XuX]منتصر — 438,462,951
-14. [XuX]Poisonxx — 336,247,035
-15. [XuX]Lord H3llFire — 303,549,418
-16. [XuX]Zer0th — 259,246,520 ⚠️
-17. [XuX]King tut — 188,220,477
-18. [XuX]turbo — 78,816,102
-19. [XuX]Teteu — 7,339,341
-```
-
-This was considered a very successful first extraction.
-
-However, there was at least one likely player-name OCR error:
-
-```text
-Expected:
-[XuX]DeviconB
-
-Extracted:
-[XuX]DeyiconB
-```
-
-This is one reason the next stage should include an approval/review workflow before data is permanently saved.
-
----
-
-# Current Duplicate Handling
-
-The bot has a `merge_players(players)` function.
-
-Players are merged by rank.
-
-If two screenshots contain the exact same:
-
-- rank
-- player name
-- damage
-
-then the duplicate is ignored.
-
-If the same rank contains different data, it is recorded as a conflict.
-
-The intended behavior is:
-
-```text
-Screenshot A:
-Rank 12 -> El Beef Chalupa -> 452,453,767
-
-Screenshot B:
-Rank 12 -> El Beef Chalupa -> 452,453,767
-
-Result:
-One player result
-```
-
-But:
-
-```text
-Rank 5 -> Player A
-Rank 5 -> Player B
-```
-
-should generate a conflict requiring review.
-
-The bot also detects missing ranks.
-
-Example:
-
-```text
-Ranks found:
-1, 2, 3, 5
-
-Missing:
-4
-```
-
----
-
-# Important Prompt Behavior
-
-The extraction prompt should emphasize:
-
-```text
-Player names are highly important.
-
-Copy player names character-for-character as closely as possible.
-
-Do not autocorrect names.
-
-Do not replace unusual spellings with more common names.
-
-Preserve:
-
-- capitalization
-- numbers
-- spaces
-- special characters
-- unusual spellings
-
-If any characters are difficult to read, return the best reading
-and set:
-
-"uncertain": true
-```
-
-Damage should always be returned as an integer with no commas.
-
-Do not estimate or invent damage.
-
----
-
-# Immediate Next Step
-
-The next feature to implement is:
-
-## Event Metadata Extraction
-
-The AI extraction should also return:
-
-```text
-event_type
-event_date
-event_time
-rallies
-alliance_damage
-```
-
-The intended JSON format is:
+The extraction prompt asks OpenAI to return JSON with:
 
 ```json
 {
@@ -449,110 +136,101 @@ The intended JSON format is:
   "event_time": "21:30:05",
   "rallies": 70,
   "alliance_damage": 11542511822,
-
   "players": [
     {
       "rank": 1,
-      "player_name": "[XuX]INCREDIBLE HoSSy",
-      "damage": 1746978512,
+      "player_name": "Example Player",
+      "damage": 123456789,
       "uncertain": false
     }
   ]
 }
 ```
 
-If a metadata field is not visible, it should return:
+Event metadata can come from overview screenshots that include the success message, date/time, rallies, and total alliance damage.
 
-```json
-null
-```
+If event date/time are missing, the save path falls back to the report submission timestamp.
 
-Do not invent event metadata.
+## Review And Duplicate Handling
 
-The current bot should display this information in the preview before saving anything.
+Screenshots often overlap. The same rank can appear in more than one screenshot.
 
----
+Duplicate player rows are merged when they have the same rank, same damage, and effectively the same player name.
 
-# Planned Development Roadmap
-
-## Phase 1 - DONE
-
-- Discord bot created
-- `/bear` test command working
-- Context menu command working
-- Multiple screenshots accepted
-- OpenAI vision processing working
-- Structured JSON extraction working
-- Duplicate ranks merged
-- Missing ranks detected
-- Conflicting duplicate ranks detected
-- Ephemeral preview displayed
-
----
-
-## Phase 2 - NEXT
-
-### Add event metadata extraction
-
-Extract:
+Player-name matching ignores leading alliance tags like `[XuX]`, so these are treated as the same player for matching:
 
 ```text
-event_type
-event_date
-event_time
-rallies
-alliance_damage
+Capitano Totti
+[XuX]Capitano Totti
 ```
 
-Display the metadata in the preview.
+If the same rank has conflicting data, the bot shows a conflict warning and does not allow saving until the screenshots are corrected or reprocessed.
 
-Do not save anything permanently yet.
+If a matching saved report is detected, the review message enables `Replace existing report` so the event can be overwritten instead of duplicated.
 
----
+## Commands
 
-## Phase 3 - Approval Workflow
-
-Add buttons to the preview:
+Root commands:
 
 ```text
-Approve & Save
-Reject
+/bear status
+/bear summary
+/bear leaderboard
+/bear recap events:<2-10>
 ```
 
-Possibly later:
+Player commands:
 
 ```text
-Edit Result
+/bear player list
+/bear player search name:<name>
+/bear player stats playername:<name>
+/bear player rename old_name:<old> new_name:<new>
+/bear player trend name:<name> months:<1|3>
 ```
 
-The ideal initial behavior:
+Event commands:
 
 ```text
-OpenAI extraction
-        |
-        v
-Preview
-        |
-        +-------------------+
-        |                   |
-        v                   v
-Approve                 Reject
-        |                   |
-        v                   v
-Save to DB            Discard
+/bear event list
+/bear event details event_id:<id>
+/bear event delete event_id:<id>
+/bear event trend months:<1|3>
 ```
 
-Potential issue:
+Most reporting commands default to the Discord channel where they are run. This keeps `#bear-trap-1` and `#bear-trap-2` separated naturally.
 
-Discord interaction buttons have time limits, so the approval architecture should account for interaction expiration and avoid storing secrets or huge data structures in button IDs.
+Reporting commands also support optional scope parameters:
 
----
+```text
+channel:#bear-trap-2
+all_channels:true
+```
 
-# Phase 4 - SQLite Database
+Useful test-channel examples:
 
-SQLite is the planned permanent storage.
+```text
+/bear event list all_channels:true
+/bear leaderboard all_channels:true
+/bear summary channel:#bear-trap-2
+/bear player search name:lord stark all_channels:true
+/bear player trend name:lord stark months:1 all_channels:true
+/bear event trend months:1 all_channels:true
+```
 
-Suggested schema:
+`/bear event list all_channels:true` includes the source channel name so saved events can be reviewed from a private testing/admin channel.
+
+## Data Model
+
+SQLite database:
+
+```text
+data/beartrap.db
+```
+
+The database and `data/` directory should not be committed.
+
+Tables:
 
 ```text
 events
@@ -564,174 +242,114 @@ event_time
 rallies
 alliance_damage
 submitted_by
+discord_message_id
+discord_channel_id
+discord_channel_name
 created_at
 ```
 
-And:
+```text
+players
+-------
+id
+canonical_name
+created_at
+updated_at
+```
+
+```text
+player_aliases
+--------------
+id
+player_id
+alias_name
+normalized_name
+visual_key
+```
 
 ```text
 player_results
 --------------
 id
 event_id
+player_id
 rank
 player_name
 damage
 uncertain
 ```
 
-Potentially also store:
+`players` is the canonical identity table. Historical results point to `player_id`, so renaming a player preserves the full history.
+
+`player_aliases` stores names seen from OCR and from manual renames. The identity resolver uses normalized names, visual keys, and fuzzy matching to catch likely OCR variations such as `Zer0th` vs `ZerOth`.
+
+`player_results.player_name` stores the raw visible name from the screenshot for traceability.
+
+## Code Structure
 
 ```text
-discord_message_id
-discord_channel_id
+bot.py
+data_access.py
+models/
+  event/
+    event_factory.py
+    event_model.py
+  player/
+    player_factory.py
+    player_model.py
+  player_result/
+    player_result_factory.py
+    player_result_model.py
+services/
+  trend_chart_service.py
 ```
 
-for traceability.
+`bot.py` owns Discord setup, slash commands, context-menu processing, review buttons, formatting, and the OpenAI extraction prompt.
 
-The database file should be:
+`data_access.py` exposes the `BearTrapRepository`, which coordinates database writes across events, players, aliases, and player results.
+
+Each model folder contains:
 
 ```text
-data/beartrap.db
+<thing>_model.py
+<thing>_factory.py
 ```
 
-The database should NOT be committed to Git.
+Factory classes own SQL and return model objects or report rows.
 
-The `data/` directory is ignored.
+Model classes expose getters and setters for table fields.
 
----
+`services/trend_chart_service.py` generates chart images for player and event trends.
 
-# Phase 5 - Historical Statistics
+## Maintenance Notes
 
-Once multiple Bear Trap reports are stored, add commands such as:
+Restart the bot after changing command signatures, command descriptions, or guild configuration so Discord command sync can run again.
 
-```text
-/bear leaderboard
-/bear player
-/bear summary
-/bear compare
+Use a private Discord test channel for testing reports without cluttering the real Bear channel. Reporting commands can read real Bear data from the test channel using `channel:` or `all_channels:true`.
+
+Back up the SQLite database before manual cleanup:
+
+```bash
+cp data/beartrap.db data/beartrap.db.backup
 ```
 
-Potential statistics:
+Example cleanup for leading `[XuX]` canonical names:
 
-- Highest damage
-- Average damage
-- Personal best
-- Alliance total damage trend
-- Player improvement over previous event
-- Biggest percentage increase
-- Most consistent player
-- Participation frequency
-- Average alliance participation
-- Historical rankings
-
-Important design principle:
-
-Use Python and SQLite for numerical/statistical calculations.
-
-Use OpenAI primarily for:
-
-- screenshot extraction
-- natural language summaries
-- fun alliance commentary
-
-Do NOT repeatedly send the entire historical database to OpenAI.
-
-The database should calculate the numbers first.
-
-Then a compact summary can optionally be sent to OpenAI for commentary.
-
----
-
-# Future AI Summary Example
-
-The bot could calculate:
-
-```json
-{
-  "event": "Bear Trap 2",
-  "players": 42,
-  "alliance_damage": 12000000000,
-  "top_player": {
-    "name": "Example",
-    "damage": 1500000000
-  },
-  "biggest_improvement": {
-    "name": "Example Player",
-    "percent_change": 18.4
-  }
-}
+```sql
+UPDATE players
+SET canonical_name = TRIM(SUBSTR(canonical_name, 6)),
+    updated_at = datetime('now')
+WHERE LOWER(canonical_name) LIKE '[xux]%';
 ```
 
-Then ask OpenAI to generate a fun alliance summary.
+Usually keep aliases even if canonical names are cleaned, because aliases help future OCR readings match the correct player.
 
-This avoids token/context problems as the history grows.
+## Development Checks
 
----
+Local syntax check:
 
-# Future Bear Trap 1 Support
-
-The database should support:
-
-```text
-Bear Trap 1
-Bear Trap 2
+```bash
+PYTHONPYCACHEPREFIX=/private/tmp/kingshot_bear_pycache python3 -m py_compile bot.py data_access.py models/event/event_factory.py models/player/player_factory.py models/player_result/player_result_factory.py services/trend_chart_service.py
 ```
 
-Do not hard-code the entire application around Bear Trap 2.
-
-`event_type` should remain a field.
-
-Future event types may also be supported.
-
----
-
-# Design Principles
-
-1. Accuracy is more important than automation.
-2. OCR/vision mistakes should be reviewable before permanent storage.
-3. Never silently save uncertain data without a review path.
-4. Preserve raw player names exactly when possible.
-5. Do not use OpenAI for calculations that Python can perform.
-6. Do not make one giant historical text file.
-7. Do not repeatedly send the entire history to OpenAI.
-8. SQLite is the source of truth.
-9. Git is for source code, not runtime data or secrets.
-10. Keep the first version simple and working before adding advanced features.
-
----
-
-# Suggested Next Cursor Task
-
-Review the current `bot.py` before making changes.
-
-Then implement:
-
-1. Event metadata extraction in `extract_bear_data()`.
-2. Update the expected JSON structure.
-3. Add event metadata to the ephemeral preview.
-4. Preserve current ranking extraction behavior.
-5. Preserve duplicate merging.
-6. Preserve conflict detection.
-7. Do NOT add permanent database saving yet.
-8. Do NOT modify `.env` or expose secrets.
-
-After implementing, test by:
-
-1. Starting the bot.
-2. Uploading a multi-screenshot Bear Trap report.
-3. Right-clicking the message.
-4. Selecting:
-
-```text
-Apps -> Process Bear Trap
-```
-
-Expected result:
-
-- Event metadata shown when visible
-- Player rankings extracted
-- Duplicate ranks merged
-- Missing ranks shown if applicable
-- Uncertain entries marked
-- No permanent data saved yet
+Chart rendering requires `matplotlib` in the active Python environment. The Ubuntu venv is the expected place to validate real chart generation.

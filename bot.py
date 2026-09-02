@@ -13,6 +13,12 @@ from openai import OpenAI
 
 from data_access import BearTrapRepository
 from services.trend_chart_service import create_event_trend_chart, create_player_trend_chart
+from services.recap_service import (
+    RECAP_MODEL,
+    build_recap_data,
+    recap_cache_key,
+    recap_input_text,
+)
 
 
 # --------------------------------------------------
@@ -961,6 +967,111 @@ async def bear_leaderboard(
         await interaction.followup.send(chunk)
 
 
+def generate_bear_recap(recap_data):
+    response = client.responses.create(
+        model=RECAP_MODEL,
+        instructions=(
+            "Write a funny, upbeat Discord recap of the supplied Bear Trap "
+            "statistics. Focus on notable improvement, personal bests, "
+            "comebacks, consistency, and strong recent performances. Teasing "
+            "must be affectionate and mild: do not humiliate players, call "
+            "anyone weak, or criticize someone with only one appearance. Do "
+            "not invent facts, causes, quotes, or statistics. Mention several "
+            "players, use readable short paragraphs or bullets, and stay "
+            "under 350 visible words. Return only the recap text."
+        ),
+        input=recap_input_text(recap_data),
+        reasoning={"effort": "minimal"},
+        max_output_tokens=400,
+        store=False,
+    )
+    return response.output_text.strip()
+
+
+def _discord_text_chunks(text, max_length=1750):
+    chunks = []
+    remaining = text.strip()
+    while len(remaining) > max_length:
+        split_at = remaining.rfind("\n", 0, max_length)
+        if split_at < max_length // 2:
+            split_at = remaining.rfind(" ", 0, max_length)
+        if split_at <= 0:
+            split_at = max_length
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+@bear_group.command(
+    name="recap",
+    description="Generate a funny recap from the latest Bear Trap events"
+)
+@app_commands.describe(
+    events="Number of recent events to recap (2-10)",
+    channel="Optional Bear channel to read from",
+    all_channels="Include recent events across all Bear channels"
+)
+async def bear_recap(
+    interaction: discord.Interaction,
+    events: int = 5,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
+    await interaction.response.defer(thinking=True)
+    event_count = max(2, min(events, 10))
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
+    source_events, results = await asyncio.to_thread(
+        repository.fetch_recap_source,
+        channel_id,
+        event_count
+    )
+    if len(source_events) < 2:
+        await interaction.followup.send(
+            f"🐻 At least two saved events are needed to recap {scope}."
+        )
+        return
+
+    recap_data = build_recap_data(source_events, results)
+    cache_key = recap_cache_key(recap_data)
+    cached = await asyncio.to_thread(repository.fetch_cached_recap, cache_key)
+    if cached is None:
+        try:
+            recap_text = await asyncio.to_thread(generate_bear_recap, recap_data)
+        except Exception as error:
+            log_event(f"Bear recap generation failed: {error}")
+            await interaction.followup.send(
+                "❌ I couldn't generate the Bear recap. Check the bot logs "
+                "and OpenAI API balance, then try again."
+            )
+            return
+        if not recap_text:
+            await interaction.followup.send("❌ OpenAI returned an empty recap.")
+            return
+        await asyncio.to_thread(
+            repository.save_cached_recap,
+            cache_key,
+            RECAP_MODEL,
+            len(source_events),
+            recap_text
+        )
+        cache_label = "newly generated"
+    else:
+        recap_text = cached["recap_text"]
+        cache_label = "cached"
+
+    heading = (
+        f"🐻 **Bear Trap recap for {scope}** — latest "
+        f"{len(source_events)} events ({cache_label})"
+    )
+    chunks = _discord_text_chunks(recap_text)
+    await interaction.followup.send(f"{heading}\n\n{chunks[0]}")
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk)
+
+
 @bear_player_group.command(
     name="search",
     description="Search a player's saved Bear Trap history"
@@ -1017,6 +1128,78 @@ async def bear_player(
         )
 
     await interaction.followup.send("\n".join(lines))
+
+
+def _player_stats_chunks(summary, history, scope, all_channels=False,
+                         max_message_length=1900):
+    lines = [
+        f"🐻 **Player stats: {summary['player_name']}**",
+        f"Scope: **{scope}**",
+        f"Events: **{summary['appearances']:,}**",
+        f"Total damage: **{summary['total_damage']:,}**",
+        f"Average damage/event: **{summary['average_damage']:,.0f}**",
+        f"Best damage: **{summary['best_damage']:,}**",
+        f"Best rank: **#{summary['best_rank']}**",
+        "",
+        "**Event results**",
+    ]
+    chunks = []
+    current = lines
+    for result in history:
+        date_label = result["event_date"] or "Unknown date"
+        if result["event_time"]:
+            date_label += f" {result['event_time']}"
+        channel_prefix = (
+            f"#{channel_label(result['discord_channel_name'])} — "
+            if all_channels else ""
+        )
+        uncertain = " ⚠️" if result["uncertain"] else ""
+        row = (
+            f"Event **{result['event_id']}** — {channel_prefix}{date_label} — "
+            f"{result['event_type']} — rank **#{result['rank']}** — "
+            f"**{result['damage']:,}** damage{uncertain}"
+        )
+        if len("\n".join(current + [row])) > max_message_length:
+            chunks.append("\n".join(current))
+            current = [f"🐻 **{summary['player_name']} event results (continued)**"]
+        current.append(row)
+    chunks.append("\n".join(current))
+    return chunks
+
+
+@bear_player_group.command(
+    name="stats",
+    description="Show a player's totals and stats for every participating event"
+)
+@app_commands.describe(
+    playername="Player name or saved alias",
+    channel="Optional Bear channel to read from",
+    all_channels="Include events across all Bear channels"
+)
+async def bear_player_stats(
+    interaction: discord.Interaction,
+    playername: str,
+    channel: discord.TextChannel = None,
+    all_channels: bool = False
+):
+    await interaction.response.defer(thinking=True)
+    channel_id = resolve_report_channel_id(interaction, channel, all_channels)
+    scope = report_scope_label(interaction, channel, all_channels)
+    summary, history = await asyncio.to_thread(
+        repository.fetch_player_stats,
+        channel_id,
+        playername
+    )
+
+    if summary is None:
+        await interaction.followup.send(
+            f"🐻 No saved player results match **{playername}** for {scope}."
+        )
+        return
+
+    chunks = _player_stats_chunks(summary, history, scope, all_channels)
+    for chunk in chunks:
+        await interaction.followup.send(chunk)
 
 
 

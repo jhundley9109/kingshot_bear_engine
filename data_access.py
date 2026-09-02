@@ -16,7 +16,19 @@ class BearTrapRepository:
     def setup(self):
         directory = os.path.dirname(self.database_path)
         if directory: os.makedirs(directory, exist_ok=True)
-        self.event_factory.setup_schema(); self.player_factory.setup_schema(); self.player_result_factory.setup_schema(); self._backfill_player_ids()
+        self.event_factory.setup_schema(); self.player_factory.setup_schema(); self.player_result_factory.setup_schema(); self._setup_recap_cache_schema(); self._backfill_player_ids()
+    def _setup_recap_cache_schema(self):
+        connection = self.connect()
+        try:
+            connection.execute("""CREATE TABLE IF NOT EXISTS bear_recap_cache (
+                cache_key TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                recap_text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""")
+            connection.commit()
+        finally: connection.close()
     def _backfill_player_ids(self):
         connection = self.connect(); connection.row_factory = sqlite3.Row
         try:
@@ -73,4 +85,52 @@ class BearTrapRepository:
             connection.rollback(); raise
         finally: connection.close()
     def fetch_player_history(self, channel_id, search_text): return self.player_result_factory.get_player_search_rows(channel_id, search_text)
+    def fetch_player_stats(self, channel_id, player_name): return self.player_result_factory.get_player_stats_rows(channel_id, player_name)
     def fetch_player_trend(self, channel_id, search_text, since_date): return self.player_result_factory.get_player_trend_rows(channel_id, search_text, since_date)
+    def fetch_recap_source(self, channel_id, event_count=5):
+        connection = self.connect(); connection.row_factory = sqlite3.Row
+        try:
+            where = ""
+            params = []
+            if channel_id is not None:
+                where = "WHERE discord_channel_id = ?"
+                params.append(str(channel_id))
+            params.append(event_count)
+            events = connection.execute(f"""SELECT id AS event_id, event_type,
+                event_date, event_time, alliance_damage, discord_channel_name
+                FROM events {where}
+                ORDER BY event_date DESC, event_time DESC, id DESC LIMIT ?""",
+                params).fetchall()
+            if not events:
+                return [], []
+            event_ids = [event["event_id"] for event in events]
+            placeholders = ",".join("?" for _ in event_ids)
+            results = connection.execute(f"""SELECT player_results.event_id,
+                players.canonical_name AS player_name, player_results.rank,
+                player_results.damage
+                FROM player_results
+                JOIN players ON players.id = player_results.player_id
+                WHERE player_results.event_id IN ({placeholders})
+                ORDER BY player_results.event_id DESC, player_results.rank""",
+                event_ids).fetchall()
+            return events, results
+        finally: connection.close()
+    def fetch_cached_recap(self, cache_key):
+        connection = self.connect(); connection.row_factory = sqlite3.Row
+        try:
+            return connection.execute(
+                "SELECT * FROM bear_recap_cache WHERE cache_key = ?",
+                (cache_key,)
+            ).fetchone()
+        finally: connection.close()
+    def save_cached_recap(self, cache_key, model, event_count, recap_text):
+        connection = self.connect()
+        try:
+            connection.execute("""INSERT OR REPLACE INTO bear_recap_cache
+                (cache_key, model, event_count, recap_text, created_at)
+                VALUES (?, ?, ?, ?, ?)""", (
+                cache_key, model, event_count, recap_text,
+                datetime.now(timezone.utc).isoformat(timespec="seconds")
+            ))
+            connection.commit()
+        finally: connection.close()
