@@ -155,6 +155,7 @@ class EventFactory:
             return connection.execute(
                 f"""SELECT events.event_date, events.event_time, events.rallies,
                     events.alliance_damage, events.discord_channel_name,
+                    events.discord_guild_id, events.discord_guild_name,
                     COUNT(player_results.id) AS participant_count
                    FROM events
                    LEFT JOIN player_results ON player_results.event_id = events.id

@@ -86,7 +86,8 @@ class PlayerFactory:
             row["canonical_name"],
             row["created_at"],
             row["updated_at"],
-            event_count
+            event_count,
+            row["guild_id"]
         )
     def _lookup(self, connection, sql, values):
         connection.row_factory = sqlite3.Row
@@ -148,18 +149,24 @@ class PlayerFactory:
             connection.commit(); player.set_canonical_name(new_name); player.set_updated_at(now); return player
         finally: connection.close()
 
-    def get_player_models(self, guild_id, limit=100):
+    def get_player_models(self, guild_id=None, limit=100):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
+            where = ""
+            params = []
+            if guild_id is not None:
+                where = "WHERE players.guild_id = ?"
+                params.append(str(guild_id))
+            params.append(limit)
             rows = connection.execute(
-                """SELECT players.*, COUNT(DISTINCT player_results.event_id) AS event_count
+                f"""SELECT players.*, COUNT(DISTINCT player_results.event_id) AS event_count
                    FROM players
                    LEFT JOIN player_results ON player_results.player_id = players.id
-                   WHERE players.guild_id = ?
+                   {where}
                    GROUP BY players.id
-                   ORDER BY players.canonical_name ASC
+                   ORDER BY players.guild_id ASC, players.canonical_name ASC
                    LIMIT ?""",
-                (str(guild_id), limit)
+                params
             ).fetchall()
             return [self._to_model(row) for row in rows]
         finally: connection.close()

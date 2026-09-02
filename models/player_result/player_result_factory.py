@@ -39,6 +39,8 @@ class PlayerResultFactory:
                 result_where = "WHERE " + " AND ".join(result_clauses)
                 params.extend(scope_params + scope_params)
             sql = """SELECT players.canonical_name AS player_name,
+                players.guild_id AS discord_guild_id,
+                MAX(events.discord_guild_name) AS discord_guild_name,
                 COUNT(DISTINCT player_results.event_id) AS appearances,
                 SUM(damage) AS total_damage,
                 AVG(damage) AS average_damage,
@@ -75,6 +77,8 @@ class PlayerResultFactory:
                 where = "events.discord_channel_id = ? AND " + where
                 params.insert(0, str(channel_id))
             names = connection.execute(f"""SELECT players.canonical_name AS player_name,
+                players.guild_id AS discord_guild_id,
+                MAX(events.discord_guild_name) AS discord_guild_name,
                 COUNT(DISTINCT player_results.event_id) AS appearances,
                 AVG(damage) AS average_damage, MAX(damage) AS best_damage
                 FROM player_results
@@ -186,6 +190,7 @@ class PlayerResultFactory:
                 params.insert(0, str(channel_id))
             return connection.execute(f"""SELECT players.canonical_name AS player_name,
                 events.event_date, events.event_time, events.discord_channel_name,
+                events.discord_guild_id, events.discord_guild_name,
                 player_results.damage
                 FROM player_results JOIN events ON events.id = player_results.event_id
                 JOIN players ON players.id = player_results.player_id

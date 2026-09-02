@@ -828,6 +828,20 @@ def channel_label(value):
     return value or "unknown-channel"
 
 
+def guild_label(name, guild_id):
+    return f"{name or 'unknown-server'} ({guild_id or 'unknown-guild-id'})"
+
+
+def guild_scope_line(rows):
+    guilds = sorted({
+        guild_label(row["discord_guild_name"], row["discord_guild_id"])
+        for row in rows if row["discord_guild_id"] is not None
+    })
+    if not guilds:
+        return None
+    return "Guilds: **" + "**, **".join(guilds) + "**"
+
+
 @bear_group.command(name="status", description="Check the Bear Trap tracker")
 async def bear_status(interaction: discord.Interaction):
     await interaction.response.send_message("🐻 Bear Trap tracker is alive!")
@@ -869,7 +883,7 @@ async def bear_summary(
     lines = [
         f"🐻 **{event.get_event_type()} summary**",
         f"Event ID: **{event.get_event_id()}**",
-        f"Server: **{event.get_discord_guild_name() or event.get_discord_guild_id() or 'unknown-server'}**",
+        f"Server: **{guild_label(event.get_discord_guild_name(), event.get_discord_guild_id())}**",
         f"Channel: **#{channel_label(event.get_discord_channel_name())}**",
         f"Players: **{len(players)}**",
     ]
@@ -914,6 +928,18 @@ def _damage_text(value):
     return f"{int(value or 0):,}"
 
 
+def _code_table_chunks(title, header, separator, rows, max_length=1900):
+    chunks = []
+    current = [title, "```text", header, separator]
+    for row in rows:
+        if len("\n".join(current + [row, "```"] )) > max_length:
+            current.append("```"); chunks.append("\n".join(current))
+            current = [f"{title} **(continued)**", "```text", header, separator]
+        current.append(row)
+    current.append("```"); chunks.append("\n".join(current))
+    return chunks
+
+
 def _has_rtl_text(value):
     return any(unicodedata.bidirectional(char) in {"R", "AL", "AN"} for char in value)
 
@@ -926,13 +952,16 @@ def _table_name_cell(value, width):
     return f"{padding}{value}"
 
 
-def _leaderboard_table_chunks(players, max_message_length=1900):
-    header = (
-        f"{'#':>3}  {'Player':>24}  {'Events':>6}  "
+def _leaderboard_table_chunks(players, all_servers=False,
+                              max_message_length=1900):
+    guild_header = f"{'Guild ID':>19}  " if all_servers else ""
+    guild_separator = f"{'-' * 19}  " if all_servers else ""
+    header = guild_header + (
+        f"{'#':>3}  {'Player':>20}  {'Events':>6}  "
         f"{'Total Damage':>16}  {'Avg/Event':>14}  {'Best':>16}"
     )
-    separator = (
-        f"{'-' * 3}  {'-' * 24}  {'-' * 6}  "
+    separator = guild_separator + (
+        f"{'-' * 3}  {'-' * 20}  {'-' * 6}  "
         f"{'-' * 16}  {'-' * 14}  {'-' * 16}"
     )
     chunks = []
@@ -940,8 +969,9 @@ def _leaderboard_table_chunks(players, max_message_length=1900):
 
     for position, player in enumerate(players, start=1):
         row = (
+            (f"{player['discord_guild_id']:>19}  " if all_servers else "") +
             f"{position:>3}  "
-            f"{_table_name_cell(player['player_name'], 24)}  "
+            f"{_table_name_cell(player['player_name'], 20)}  "
             f"{player['appearances']:>6}  "
             f"{_damage_text(player['total_damage']):>16}  "
             f"{_damage_text(player['average_damage']):>14}  "
@@ -1003,7 +1033,11 @@ async def bear_leaderboard(
     if limit:
         title += f" showing top {limit}"
 
-    chunks = _leaderboard_table_chunks(players)
+    if all_servers:
+        guild_line = guild_scope_line(players)
+        if guild_line:
+            title += f"\n{guild_line}"
+    chunks = _leaderboard_table_chunks(players, all_servers)
     await interaction.followup.send(f"{title}\n{chunks[0]}")
     for chunk in chunks[1:]:
         await interaction.followup.send(chunk)
@@ -1113,8 +1147,16 @@ async def bear_recap(
         f"{len(source_events)} events ({cache_label})"
     )
     chunks = _discord_text_chunks(recap_text)
-    await interaction.followup.send(f"{heading}\n\n{chunks[0]}")
-    for chunk in chunks[1:]:
+    if all_servers:
+        guild_line = guild_scope_line(source_events)
+        await interaction.followup.send(
+            f"{heading}\n{guild_line}" if guild_line else heading
+        )
+        start_at = 0
+    else:
+        await interaction.followup.send(f"{heading}\n\n{chunks[0]}")
+        start_at = 1
+    for chunk in chunks[start_at:]:
         await interaction.followup.send(chunk)
 
 
@@ -1156,8 +1198,14 @@ async def bear_player(
     if len(players) > 1:
         lines.append("**Matching players**")
         for player in players:
+            server_prefix = ""
+            if all_servers:
+                server_prefix = guild_label(
+                    player["discord_guild_name"],
+                    player["discord_guild_id"]
+                ) + " — "
             lines.append(
-                f"{player['player_name']} — {player['appearances']} events, "
+                f"{server_prefix}{player['player_name']} — {player['appearances']} events, "
                 f"{player['average_damage']:,.0f} avg, "
                 f"{player['best_damage']:,} best"
             )
@@ -1172,7 +1220,9 @@ async def bear_player(
         if all_channels or all_servers:
             server_prefix = ""
             if all_servers:
-                server_prefix = f"{result['discord_guild_name'] or result['discord_guild_id']} / "
+                server_prefix = guild_label(
+                    result["discord_guild_name"], result["discord_guild_id"]
+                ) + " / "
             channel_prefix = f"{server_prefix}#{channel_label(result['discord_channel_name'])} — "
         uncertain = " ⚠️" if result["uncertain"] else ""
         lines.append(
@@ -1197,6 +1247,10 @@ def _player_stats_chunks(summary, history, scope, all_channels=False,
         "",
         "**Event results**",
     ]
+    if all_servers:
+        guild_line = guild_scope_line(history)
+        if guild_line:
+            lines.insert(2, guild_line)
     chunks = []
     current = lines
     for result in history:
@@ -1207,7 +1261,9 @@ def _player_stats_chunks(summary, history, scope, all_channels=False,
         if all_channels or all_servers:
             server_prefix = ""
             if all_servers:
-                server_prefix = f"{result['discord_guild_name'] or result['discord_guild_id']} / "
+                server_prefix = guild_label(
+                    result["discord_guild_name"], result["discord_guild_id"]
+                ) + " / "
             channel_prefix = f"{server_prefix}#{channel_label(result['discord_channel_name'])} — "
         uncertain = " ⚠️" if result["uncertain"] else ""
         row = (
@@ -1267,9 +1323,17 @@ async def bear_player_stats(
     name="list",
     description="List canonical players stored by the tracker"
 )
-async def bear_player_list(interaction: discord.Interaction):
+@app_commands.describe(
+    all_servers="Owner only: list players from every configured server"
+)
+async def bear_player_list(
+    interaction: discord.Interaction,
+    all_servers: bool = False
+):
+    if not await validate_report_scope(interaction, all_servers=all_servers): return
     await interaction.response.defer(ephemeral=True, thinking=True)
-    players = await asyncio.to_thread(repository.fetch_players, interaction.guild_id, 50)
+    guild_id = None if all_servers else interaction.guild_id
+    players = await asyncio.to_thread(repository.fetch_players, guild_id, 100)
 
     if not players:
         await interaction.followup.send(
@@ -1278,23 +1342,34 @@ async def bear_player_list(interaction: discord.Interaction):
         )
         return
 
-    lines = [
-        "🐻 **Canonical players**",
-        "```text",
-        "ID    Events  Player",
-        "----  ------  ------------------------------",
-    ]
+    title = "🐻 **Canonical players"
+    title += " across all configured servers" if all_servers else " in this server"
+    title += "**"
+    if all_servers:
+        header = "Guild ID             Server            ID    Events  Player"
+        separator = "-------------------  ----------------  ----  ------  ------------------------"
+    else:
+        header = "ID    Events  Player"
+        separator = "----  ------  ------------------------------"
+    chunks = []
+    current = [title, "```text", header, separator]
     for player in players:
         name = player.get_canonical_name().replace("`", "ˋ")
-        lines.append(
-            f"{player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
-        )
-
-    lines.append("```")
-    if len(players) == 50:
-        lines.append("Showing the first 50 players.")
-
-    await interaction.followup.send("\n".join(lines), ephemeral=True)
+        if all_servers:
+            guild = bot.get_guild(int(player.get_guild_id()))
+            server = _table_text(getattr(guild, "name", None) or player.get_guild_id(), 16)
+            row = f"{player.get_guild_id():<19}  {server:<16}  {player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
+        else:
+            row = f"{player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
+        if len("\n".join(current + [row, "```"] )) > 1900:
+            current.append("```"); chunks.append("\n".join(current))
+            current = ["🐻 **Canonical players (continued)**", "```text", header, separator]
+        current.append(row)
+    current.append("```"); chunks.append("\n".join(current))
+    if len(players) == 100:
+        chunks[-1] += "\nShowing the first 100 players."
+    for chunk in chunks:
+        await interaction.followup.send(chunk, ephemeral=True)
 
 
 @bear_player_group.command(
@@ -1346,22 +1421,17 @@ async def bear_event_list(
     if not events:
         await interaction.followup.send(f"🐻 No saved events for {scope}.", ephemeral=True)
         return
-    lines = [f"🐻 **Saved events for {scope}**", "```text"]
+    title = f"🐻 **Saved events for {scope}**"
     if all_servers:
-        lines.extend([
-            "Server         Channel       ID    Date / Time           Damage",
-            "-------------  ------------  ----  --------------------  ----------------"
-        ])
+        header = "Guild ID             Server         Channel       Event  Date / Time           Damage"
+        separator = "-------------------  -------------  ------------  -----  --------------------  ----------------"
     elif all_channels:
-        lines.extend([
-            "Channel             ID    Date / Time           Rallies  Damage",
-            "------------------  ----  --------------------  -------  ----------------"
-        ])
+        header = "Channel             ID    Date / Time           Rallies  Damage"
+        separator = "------------------  ----  --------------------  -------  ----------------"
     else:
-        lines.extend([
-            "ID    Date / Time           Rallies  Damage",
-            "----  --------------------  -------  ----------------"
-        ])
+        header = "ID    Date / Time           Rallies  Damage"
+        separator = "----  --------------------  -------  ----------------"
+    rows = []
     for event in events:
         timestamp = f"{event.get_event_date() or '-'} {event.get_event_time() or '-'}"
         rallies = event.get_rallies() if event.get_rallies() is not None else "-"
@@ -1369,15 +1439,16 @@ async def bear_event_list(
         if all_servers:
             server = _table_text(event.get_discord_guild_name() or event.get_discord_guild_id() or "unknown", 13)
             name = _table_text(channel_label(event.get_discord_channel_name()), 12)
-            lines.append(f"{server:<13}  {name:<12}  {event.get_event_id():<4}  {timestamp:<20}  {damage}")
+            rows.append(f"{event.get_discord_guild_id():<19}  {server:<13}  {name:<12}  {event.get_event_id():<5}  {timestamp:<20}  {damage}")
         elif all_channels:
             name = _table_text(channel_label(event.get_discord_channel_name()), 18)
-            lines.append(f"{name:<18}  {event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
+            rows.append(f"{name:<18}  {event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
         else:
-            lines.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
-    lines.append("```")
-    if len(events) == 50: lines.append("Showing the latest 50 events.")
-    await interaction.followup.send("\n".join(lines), ephemeral=True)
+            rows.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
+    chunks = _code_table_chunks(title, header, separator, rows)
+    if len(events) == 50: chunks[-1] += "\nShowing the latest 50 events."
+    for chunk in chunks:
+        await interaction.followup.send(chunk, ephemeral=True)
 
 
 @bear_event_group.command(name="details", description="Show details for one event ID")
@@ -1400,7 +1471,7 @@ async def bear_event_details(
     if event is None:
         await interaction.followup.send("❌ No event with that ID exists in that scope.", ephemeral=True)
         return
-    lines = [f"🐻 **Event ID {event.get_event_id()}**", f"Server: **{event.get_discord_guild_name() or event.get_discord_guild_id() or 'unknown-server'}**", f"Channel: **#{channel_label(event.get_discord_channel_name())}**", f"Type: **{event.get_event_type()}**", f"Date: **{event.get_event_date()} {event.get_event_time()}**", f"Rallies: **{event.get_rallies() if event.get_rallies() is not None else 'Not found'}**", f"Alliance damage: **{event.get_alliance_damage():,}**" if event.get_alliance_damage() is not None else "Alliance damage: **Not found**", f"Participants: **{len(results)}**"]
+    lines = [f"🐻 **Event ID {event.get_event_id()}**", f"Server: **{guild_label(event.get_discord_guild_name(), event.get_discord_guild_id())}**", f"Channel: **#{channel_label(event.get_discord_channel_name())}**", f"Type: **{event.get_event_type()}**", f"Date: **{event.get_event_date()} {event.get_event_time()}**", f"Rallies: **{event.get_rallies() if event.get_rallies() is not None else 'Not found'}**", f"Alliance damage: **{event.get_alliance_damage():,}**" if event.get_alliance_damage() is not None else "Alliance damage: **Not found**", f"Participants: **{len(results)}**"]
     await interaction.followup.send("\n".join(lines))
 
 
@@ -1425,7 +1496,7 @@ async def bear_event_delete(
         await interaction.followup.send("❌ No event with that ID exists in that scope.", ephemeral=True)
         return
     await interaction.followup.send(
-        f"⚠️ Delete Event ID **{event_id}** from **#{channel_label(event.get_discord_channel_name())}** with **{len(results)}** player results? This cannot be undone.",
+        f"⚠️ Delete Event ID **{event_id}** from **{guild_label(event.get_discord_guild_name(), event.get_discord_guild_id())} / #{channel_label(event.get_discord_channel_name())}** with **{len(results)}** player results? This cannot be undone.",
         ephemeral=True,
         view=EventDeleteView(event_id, channel_id, guild_id, interaction.user.id)
     )
@@ -1474,8 +1545,12 @@ async def bear_event_trend(
         return
 
     chart = await asyncio.to_thread(create_event_trend_chart, rows, months)
+    message = f"🐻 **Event trends for {scope} — last {months} month(s)**"
+    guild_line = guild_scope_line(rows) if all_servers else None
+    if guild_line:
+        message += f"\n{guild_line}"
     await interaction.followup.send(
-        f"🐻 **Event trends for {scope} — last {months} month(s)**",
+        message,
         file=discord.File(chart, filename="bear-event-trend.png")
     )
 
@@ -1531,8 +1606,12 @@ async def bear_player_trend(
         months,
         name
     )
+    message = f"🐻 **{name} in {scope} — last {months} month(s)**"
+    guild_line = guild_scope_line(rows) if all_servers else None
+    if guild_line:
+        message += f"\n{guild_line}"
     await interaction.followup.send(
-        f"🐻 **{name} in {scope} — last {months} month(s)**",
+        message,
         file=discord.File(chart, filename="bear-player-trend.png")
     )
 

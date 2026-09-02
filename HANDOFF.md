@@ -202,7 +202,7 @@ Root commands:
 Player commands:
 
 ```text
-/bear player list
+/bear player list [all_servers:true]
 /bear player search name:<name>
 /bear player stats playername:<name>
 /bear player rename old_name:<old> new_name:<new>
