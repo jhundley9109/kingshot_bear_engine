@@ -109,6 +109,48 @@ Install the dependencies:
 pip install -r requirements.txt
 ```
 
+## Run continuously with systemd (Linux)
+
+After creating the `.env` file described below, run the installer from the
+repository root:
+
+```bash
+sudo ./scripts/install-systemd.sh
+```
+
+The installer creates/updates the `venv`, installs dependencies, enables the
+bot at boot, starts it immediately, and configures weekly log rotation. The
+service runs as the user who invoked `sudo` (or the repository owner when the
+installer is run directly as root).
+
+It installs the generated unit at
+`/etc/systemd/system/kingshot-bear-engine.service` and the rotation policy at
+`/etc/logrotate.d/kingshot-bear-engine`. Runtime output is written to
+`/var/log/kingshot-bear-engine/bot.log`; the log is readable by the service
+user and its group and is retained for eight weekly rotations.
+
+Useful commands:
+
+```bash
+sudo systemctl status kingshot-bear-engine
+sudo systemctl restart kingshot-bear-engine
+sudo systemctl stop kingshot-bear-engine
+sudo systemctl disable --now kingshot-bear-engine
+tail -f /var/log/kingshot-bear-engine/bot.log
+```
+
+To install and enable the service without starting it immediately:
+
+```bash
+sudo ./scripts/install-systemd.sh --no-start
+```
+
+Re-run the installer after changing Python dependencies, the service template,
+or the log rotation template. A normal code or `.env` change only requires
+`sudo systemctl restart kingshot-bear-engine`. Do not also launch `bot.py`
+manually while the service is running because two processes must not use the
+same Discord token and SQLite database.
+
 ---
 
 # Configuration

@@ -49,39 +49,56 @@ Invite the same bot application to each configured server and restart the one bo
 
 ## Running The Bot
 
-Activate the venv and start the process:
+### Production service (recommended)
+
+The production bot should run through systemd so it starts when the Ubuntu
+server boots and is restarted automatically if the process exits. Once the
+repository's `.env` file is configured, install it from the repository root:
+
+```bash
+cd /home/jhundley/git/kingshot_bear_bot
+sudo ./scripts/install-systemd.sh
+```
+
+The installer:
+
+- creates the project-local `venv` when needed and installs `requirements.txt`;
+- creates the writable `data/` and log directories;
+- installs and enables `kingshot-bear-engine.service`;
+- starts or restarts the bot immediately;
+- writes stdout and stderr to `/var/log/kingshot-bear-engine/bot.log`; and
+- installs weekly log rotation with eight retained logs.
+
+The service runs as the user who invoked `sudo`, or as the repository owner
+when the script is invoked directly by root. The installed files are generated
+from `deploy/kingshot-bear-engine.service.in` and
+`deploy/kingshot-bear-engine.logrotate.in`.
+
+Common operations:
+
+```bash
+sudo systemctl status kingshot-bear-engine
+sudo systemctl restart kingshot-bear-engine
+sudo systemctl stop kingshot-bear-engine
+sudo systemctl disable --now kingshot-bear-engine
+tail -f /var/log/kingshot-bear-engine/bot.log
+```
+
+Use `sudo ./scripts/install-systemd.sh --no-start` to install and enable the
+service without starting it. Re-run the installer whenever dependencies or a
+deployment template changes. For code or `.env` changes, restart the service.
+
+Do not run a manual or `nohup` copy alongside systemd. Multiple processes must
+not use the same Discord token or SQLite database.
+
+### Manual debugging
+
+For foreground debugging only, activate the venv and start the process:
 
 ```bash
 cd /home/jhundley/git/kingshot_bear_bot
 source venv/bin/activate
 python3 bot.py
-```
-
-To keep it running after SSH disconnects:
-
-```bash
-cd /home/jhundley/git/kingshot_bear_bot
-source venv/bin/activate
-mkdir -p logs
-nohup python3 bot.py >> logs/bot.log 2>&1 &
-```
-
-Tail logs:
-
-```bash
-tail -f logs/bot.log
-```
-
-Find the running process:
-
-```bash
-ps aux | grep '[p]ython3 bot.py'
-```
-
-Stop it:
-
-```bash
-pkill -f 'python3 bot.py'
 ```
 
 ## High-Level Workflow

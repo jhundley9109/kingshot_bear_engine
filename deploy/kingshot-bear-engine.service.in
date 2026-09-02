@@ -1,0 +1,34 @@
+[Unit]
+Description=Kingshot Bear Trap Discord Bot
+Documentation=file://@PROJECT_DIR@/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=@PROJECT_DIR@/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=MPLCONFIGDIR=@PROJECT_DIR@/data/.matplotlib
+ExecStart=@PROJECT_DIR@/venv/bin/python @PROJECT_DIR@/bot.py
+
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+
+StandardOutput=append:@LOG_FILE@
+StandardError=append:@LOG_FILE@
+UMask=0027
+
+# Basic hardening. The bot only needs to write its database/chart cache and log.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@PROJECT_DIR@/data @LOG_DIR@
+
+[Install]
+WantedBy=multi-user.target
