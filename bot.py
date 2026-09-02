@@ -1,9 +1,6 @@
 import os
-import json
 import asyncio
 import discord
-import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -27,15 +24,18 @@ from services.discord_formatting import (
 )
 from services.extraction_review_service import (
     build_extraction_preview,
+    extract_bear_data,
     find_image_attachments,
+    merge_players,
 )
 from services.recap_service import (
     RECAP_MODEL,
     build_recap_data,
+    generate_bear_recap,
     recap_cache_key,
-    recap_input_text,
 )
 from services.trend_chart_service import create_event_trend_chart, create_player_trend_chart
+from views.review_views import BearTrapReviewView, EventDeleteView
 
 
 # --------------------------------------------------
@@ -127,364 +127,6 @@ def log_event(message):
 
 
 # --------------------------------------------------
-# AI EXTRACTION
-# --------------------------------------------------
-def extract_bear_data(image_urls):
-
-    prompt = """
-You are reading screenshots from the mobile game Kingshot.
-
-The screenshots show results from a Hunting Trap event, also called
-Bear Trap.
-
-You may receive multiple screenshots from the SAME event.
-
-Some screenshots overlap and show duplicate player rankings.
-
-Your job is to extract:
-
-EVENT-LEVEL INFORMATION:
-- event_type
-- event_date
-- event_time
-- rallies
-- alliance_damage
-
-PLAYER RESULTS:
-For every visible player, extract:
-- rank
-- player_name
-- damage
-
-IMPORTANT RULES FOR EVENT INFORMATION:
-
-1. event_type should be the event shown in the screenshot.
-   Example: "Bear Trap 2"
-
-2. Extract the event date exactly if visible.
-   Return it in YYYY-MM-DD format.
-
-3. Extract the event time if visible.
-   Return it in HH:MM:SS format.
-
-4. rallies must be a whole integer.
-
-5. alliance_damage must be a whole integer with no commas.
-
-6. If any event-level information is not visible or cannot be read
-   confidently, return null.
-
-7. One attachment may be a Mail / Success / Battle Overview screenshot.
-   It may show a timestamp banner, event text such as "[Hunting Trap 2]",
-   and the exact labels "Rallies:" and "Total Alliance Damage:".
-   Read those values as event metadata.
-
-8. Treat the Battle Overview's Total Alliance Damage as the authoritative
-   alliance_damage value. Do not derive it from a partial player-ranking
-   screenshot.
-
-IMPORTANT RULES FOR PLAYER RESULTS:
-
-1. Preserve the player's name as closely as possible to exactly how
-   it appears on screen.
-
-2. Do NOT autocorrect player names.
-
-3. Preserve capitalization, numbers, spaces, and unusual spellings.
-
-4. Do not replace unusual names with more common spellings.
-
-5. Damage must be returned as a whole integer with no commas.
-
-6. Do not estimate damage.
-
-7. Do not invent players that are not visible.
-
-8. Some screenshots overlap and show the same rank more than once.
-   Extract every visible result from every screenshot.
-
-9. Ignore profile pictures, icons, decorative UI, and alliance banners
-   unless they are part of the visible player name.
-
-10. If a player name or damage number is difficult to read, return your
-    best reading but set "uncertain": true.
-
-11. Return ONLY valid JSON.
-
-12. Do not include markdown or explanations.
-
-Use exactly this format:
-
-{
-  "event_type": null,
-  "event_date": null,
-  "event_time": null,
-  "rallies": null,
-  "alliance_damage": null,
-
-  "players": [
-    {
-      "rank": 1,
-      "player_name": "Example Player",
-      "damage": 123456789,
-      "uncertain": false
-    }
-  ]
-}
-"""
-
-    content = [
-        {
-            "type": "input_text",
-            "text": prompt
-        }
-    ]
-
-    for url in image_urls:
-        content.append(
-            {
-                "type": "input_image",
-                "image_url": url,
-                "detail": "high"
-            }
-        )
-
-    response = client.responses.create(
-        model="gpt-5",
-        input=[
-            {
-                "role": "user",
-                "content": content
-            }
-        ]
-    )
-
-    return json.loads(response.output_text)
-
-
-# --------------------------------------------------
-# MERGE DUPLICATES
-# --------------------------------------------------
-
-def player_match_name(name):
-    normalized = unicodedata.normalize("NFKC", str(name)).casefold()
-    normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
-    return " ".join(normalized.split())
-
-
-def merge_players(players):
-
-    merged = {}
-    conflicts = []
-
-    for player in players:
-
-        rank = player["rank"]
-
-        if rank not in merged:
-
-            merged[rank] = player
-
-        else:
-
-            existing = merged[rank]
-
-            # Same information = harmless duplicate.
-            if (
-                player_match_name(existing["player_name"])
-                == player_match_name(player["player_name"])
-                and existing["damage"] == player["damage"]
-            ):
-                continue
-
-            # Same rank but different data.
-            conflicts.append(
-                {
-                    "rank": rank,
-                    "first": existing,
-                    "second": player
-                }
-            )
-
-    sorted_players = [
-        merged[rank]
-        for rank in sorted(merged.keys())
-    ]
-
-    return sorted_players, conflicts
-
-
-
-# --------------------------------------------------
-# APPROVAL WORKFLOW
-# --------------------------------------------------
-
-class BearTrapReviewView(discord.ui.View):
-
-    def __init__(
-        self, data, players, source_message, submitted_by,
-        submitted_at, existing_event_id=None
-    ):
-        super().__init__(timeout=900)
-        self.data = data
-        self.players = players
-        self.source_message = source_message
-        self.submitted_by = submitted_by
-        self.submitted_at = submitted_at
-        self.existing_event_id = existing_event_id
-        self.completed = False
-        self.replace_existing.disabled = existing_event_id is None
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.submitted_by:
-            await interaction.response.send_message(
-                "❌ Only the person who requested this preview can approve or reject it.",
-                ephemeral=True
-            )
-            return False
-        return True
-
-    def disable_buttons(self):
-        for child in self.children:
-            child.disabled = True
-
-    async def save_review(self, interaction, replace_existing=False):
-        if self.completed:
-            await interaction.response.send_message(
-                "This review has already been completed.", ephemeral=True
-            )
-            return
-        if self.existing_event_id and not replace_existing:
-            await interaction.response.send_message(
-                "⚠️ This matches an existing saved report. Use **Replace existing report** "
-                "to overwrite it, or Reject to discard this preview.",
-                ephemeral=True
-            )
-            return
-
-        self.completed = True
-        self.disable_buttons()
-        try:
-            if replace_existing:
-                event_id = await asyncio.to_thread(
-                    repository.replace_result, self.existing_event_id, self.data,
-                    self.players, self.source_message, interaction.user.id,
-                    self.submitted_at
-                )
-                action = "replaced"
-            else:
-                event_id = await asyncio.to_thread(
-                    repository.save_result, self.data, self.players,
-                    self.source_message, interaction.user.id,
-                    self.submitted_at
-                )
-                action = "saved"
-        except Exception as error:
-            self.completed = False
-            for child in self.children:
-                child.disabled = False
-            self.replace_existing.disabled = self.existing_event_id is None
-            print("Error saving Bear Trap result:")
-            print(error)
-            await interaction.response.edit_message(
-                content=(
-                    "❌ I couldn't save this result. No data was written; "
-                    "check the bot's terminal and try again."
-                ),
-                view=self
-            )
-            return
-
-        await interaction.response.edit_message(
-            content=(
-                f"✅ **Bear Trap result {action}!**\n"
-                f"Event ID: **{event_id}**\n"
-                f"Player rankings saved: **{len(self.players)}**"
-            ),
-            view=self
-        )
-
-    @discord.ui.button(label="Approve & Save", style=discord.ButtonStyle.success)
-    async def approve(self, interaction, button):
-        await self.save_review(interaction)
-
-    @discord.ui.button(
-        label="Replace existing report", style=discord.ButtonStyle.secondary
-    )
-    async def replace_existing(self, interaction, button):
-        await self.save_review(interaction, replace_existing=True)
-
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
-    async def reject(self, interaction, button):
-        if self.completed:
-            await interaction.response.send_message(
-                "This review has already been completed.", ephemeral=True
-            )
-            return
-        self.completed = True
-        self.disable_buttons()
-        await interaction.response.edit_message(
-            content="🗑️ **Bear Trap result rejected.** Nothing was saved.",
-            view=self
-        )
-
-    async def on_timeout(self):
-        if not self.completed:
-            self.disable_buttons()
-
-
-class EventDeleteView(discord.ui.View):
-    def __init__(self, event_id, channel_id, guild_id, requested_by):
-        super().__init__(timeout=900)
-        self.event_id = event_id
-        self.channel_id = channel_id
-        self.guild_id = guild_id
-        self.requested_by = requested_by
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.requested_by:
-            await interaction.response.send_message(
-                "❌ Only the user who requested this deletion can confirm it.",
-                ephemeral=True
-            )
-            return False
-        return True
-
-    def disable_buttons(self):
-        for child in self.children:
-            child.disabled = True
-
-    @discord.ui.button(label="Confirm delete", style=discord.ButtonStyle.danger)
-    async def confirm_delete(self, interaction, button):
-        self.disable_buttons()
-        try:
-            event = await asyncio.to_thread(
-                repository.delete_event,
-                self.event_id,
-                self.channel_id,
-                self.guild_id
-            )
-        except ValueError as error:
-            await interaction.response.edit_message(content=f"❌ {error}", view=self)
-            return
-        await interaction.response.edit_message(
-            content=(
-                f"🗑️ Deleted Event ID **{event.get_event_id()}** "
-                f"({event.get_event_date()} {event.get_event_time()})."
-            ),
-            view=self
-        )
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel_delete(self, interaction, button):
-        self.disable_buttons()
-        await interaction.response.edit_message(
-            content="Deletion cancelled. Nothing was changed.",
-            view=self
-        )
-
-
-# --------------------------------------------------
 # PROCESS BEAR TRAP MESSAGE
 # --------------------------------------------------
 
@@ -526,6 +168,7 @@ async def process_bear_trap(
         # Run the blocking OpenAI request in a worker thread.
         data = await asyncio.to_thread(
             extract_bear_data,
+            client,
             image_urls
         )
 
@@ -556,6 +199,7 @@ async def process_bear_trap(
 
         if not conflicts:
             review_view = BearTrapReviewView(
+                repository,
                 data,
                 merged_players,
                 message,
@@ -817,27 +461,6 @@ async def bear_leaderboard(
         await interaction.followup.send(chunk)
 
 
-def generate_bear_recap(recap_data):
-    response = client.responses.create(
-        model=RECAP_MODEL,
-        instructions=(
-            "Write a funny, upbeat Discord recap of the supplied Bear Trap "
-            "statistics. Focus on notable improvement, personal bests, "
-            "comebacks, consistency, and strong recent performances. Teasing "
-            "must be affectionate and mild: do not humiliate players, call "
-            "anyone weak, or criticize someone with only one appearance. Do "
-            "not invent facts, causes, quotes, or statistics. Mention several "
-            "players, use readable short paragraphs or bullets, and stay "
-            "under 350 visible words. Return only the recap text."
-        ),
-        input=recap_input_text(recap_data),
-        reasoning={"effort": "minimal"},
-        max_output_tokens=400,
-        store=False,
-    )
-    return response.output_text.strip()
-
-
 @bear_group.command(
     name="recap",
     description="Generate a funny recap from the latest Bear Trap events"
@@ -877,7 +500,9 @@ async def bear_recap(
     cached = await asyncio.to_thread(repository.fetch_cached_recap, cache_key)
     if cached is None:
         try:
-            recap_text = await asyncio.to_thread(generate_bear_recap, recap_data)
+            recap_text = await asyncio.to_thread(
+                generate_bear_recap, client, recap_data
+            )
         except Exception as error:
             log_event(f"Bear recap generation failed: {error}")
             await interaction.followup.send(
@@ -1263,7 +888,11 @@ async def bear_event_delete(
         f"⚠️ Delete Event ID **{event_id}** from **{guild_label(event.get_discord_guild_name(), event.get_discord_guild_id())} / #{channel_label(event.get_discord_channel_name())}** with **{len(results)}** player results? This cannot be undone.",
         ephemeral=True,
         view=EventDeleteView(
-            event_id, scope.channel_id, scope.guild_id, interaction.user.id
+            repository,
+            event_id,
+            scope.channel_id,
+            scope.guild_id,
+            interaction.user.id,
         )
     )
 

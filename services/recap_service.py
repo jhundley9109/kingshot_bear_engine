@@ -5,6 +5,16 @@ from collections import defaultdict
 
 RECAP_PROMPT_VERSION = "bear-recap-v1"
 RECAP_MODEL = "gpt-5-mini"
+RECAP_INSTRUCTIONS = (
+    "Write a funny, upbeat Discord recap of the supplied Bear Trap "
+    "statistics. Focus on notable improvement, personal bests, "
+    "comebacks, consistency, and strong recent performances. Teasing "
+    "must be affectionate and mild: do not humiliate players, call "
+    "anyone weak, or criticize someone with only one appearance. Do "
+    "not invent facts, causes, quotes, or statistics. Mention several "
+    "players, use readable short paragraphs or bullets, and stay "
+    "under 350 visible words. Return only the recap text."
+)
 
 
 def build_recap_data(events, results):
@@ -97,3 +107,15 @@ def recap_cache_key(recap_data):
 
 def recap_input_text(recap_data):
     return json.dumps(recap_data, separators=(",", ":"), ensure_ascii=False)
+
+
+def generate_bear_recap(openai_client, recap_data):
+    response = openai_client.responses.create(
+        model=RECAP_MODEL,
+        instructions=RECAP_INSTRUCTIONS,
+        input=recap_input_text(recap_data),
+        reasoning={"effort": "minimal"},
+        max_output_tokens=400,
+        store=False,
+    )
+    return response.output_text.strip()
