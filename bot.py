@@ -13,7 +13,18 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from data_access import BearTrapRepository
-from services.trend_chart_service import create_event_trend_chart, create_player_trend_chart
+from services.discord_formatting import (
+    channel_label,
+    code_table_chunks,
+    damage_text,
+    discord_text_chunks,
+    guild_label,
+    guild_scope_line,
+    line_chunks,
+    player_result_context,
+    table_name_cell,
+    table_text,
+)
 from services.extraction_review_service import (
     build_extraction_preview,
     find_image_attachments,
@@ -24,6 +35,7 @@ from services.recap_service import (
     recap_cache_key,
     recap_input_text,
 )
+from services.trend_chart_service import create_event_trend_chart, create_player_trend_chart
 
 
 # --------------------------------------------------
@@ -636,22 +648,16 @@ async def prepare_report_scope(
     )
 
 
-def channel_label(value):
-    return value or "unknown-channel"
-
-
-def guild_label(name, guild_id):
-    return f"{name or 'unknown-server'} ({guild_id or 'unknown-guild-id'})"
-
-
-def guild_scope_line(rows):
-    guilds = sorted({
-        guild_label(row["discord_guild_name"], row["discord_guild_id"])
-        for row in rows if row["discord_guild_id"] is not None
-    })
-    if not guilds:
+async def prepare_trend_since_date(interaction, months):
+    if months not in (1, 3):
+        await interaction.response.send_message(
+            "❌ Choose either `months: 1` or `months: 3`.",
+            ephemeral=True
+        )
         return None
-    return "Guilds: **" + "**, **".join(guilds) + "**"
+    return (
+        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
+    ).isoformat()
 
 
 @bear_group.command(name="status", description="Check the Bear Trap tracker")
@@ -729,41 +735,6 @@ async def bear_summary(
     await interaction.followup.send("\n".join(lines))
 
 
-def _table_text(value, width):
-    value = str(value).replace("`", "'")
-    if len(value) <= width:
-        return value
-    return value[: width - 3] + "..."
-
-
-def _damage_text(value):
-    return f"{int(value or 0):,}"
-
-
-def _code_table_chunks(title, header, separator, rows, max_length=1900):
-    chunks = []
-    current = [title, "```text", header, separator]
-    for row in rows:
-        if len("\n".join(current + [row, "```"] )) > max_length:
-            current.append("```"); chunks.append("\n".join(current))
-            current = [f"{title} **(continued)**", "```text", header, separator]
-        current.append(row)
-    current.append("```"); chunks.append("\n".join(current))
-    return chunks
-
-
-def _has_rtl_text(value):
-    return any(unicodedata.bidirectional(char) in {"R", "AL", "AN"} for char in value)
-
-
-def _table_name_cell(value, width):
-    value = _table_text(value, width)
-    padding = " " * max(0, width - len(value))
-    if _has_rtl_text(value):
-        return f"{padding}\u2067{value}\u2069"
-    return f"{padding}{value}"
-
-
 def _leaderboard_table_chunks(players, all_servers=False,
                               max_message_length=1900):
     guild_header = f"{'Guild ID':>19}  " if all_servers else ""
@@ -776,29 +747,20 @@ def _leaderboard_table_chunks(players, all_servers=False,
         f"{'-' * 3}  {'-' * 20}  {'-' * 6}  "
         f"{'-' * 16}  {'-' * 14}  {'-' * 16}"
     )
-    chunks = []
-    current = ["```text", header, separator]
-
+    rows = []
     for position, player in enumerate(players, start=1):
-        row = (
+        rows.append(
             (f"{player['discord_guild_id']:>19}  " if all_servers else "") +
             f"{position:>3}  "
-            f"{_table_name_cell(player['player_name'], 20)}  "
+            f"{table_name_cell(player['player_name'], 20)}  "
             f"{player['appearances']:>6}  "
-            f"{_damage_text(player['total_damage']):>16}  "
-            f"{_damage_text(player['average_damage']):>14}  "
-            f"{_damage_text(player['best_damage']):>16}"
+            f"{damage_text(player['total_damage']):>16}  "
+            f"{damage_text(player['average_damage']):>14}  "
+            f"{damage_text(player['best_damage']):>16}"
         )
-        candidate = "\n".join(current + [row, "```"])
-        if len(candidate) > max_message_length and len(current) > 3:
-            current.append("```")
-            chunks.append("\n".join(current))
-            current = ["```text", header, separator]
-        current.append(row)
-
-    current.append("```")
-    chunks.append("\n".join(current))
-    return chunks
+    return code_table_chunks(
+        header, separator, rows, max_length=max_message_length
+    )
 
 
 @bear_group.command(
@@ -876,22 +838,6 @@ def generate_bear_recap(recap_data):
     return response.output_text.strip()
 
 
-def _discord_text_chunks(text, max_length=1750):
-    chunks = []
-    remaining = text.strip()
-    while len(remaining) > max_length:
-        split_at = remaining.rfind("\n", 0, max_length)
-        if split_at < max_length // 2:
-            split_at = remaining.rfind(" ", 0, max_length)
-        if split_at <= 0:
-            split_at = max_length
-        chunks.append(remaining[:split_at].rstrip())
-        remaining = remaining[split_at:].lstrip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
-
-
 @bear_group.command(
     name="recap",
     description="Generate a funny recap from the latest Bear Trap events"
@@ -958,7 +904,7 @@ async def bear_recap(
         f"🐻 **Bear Trap recap for {scope.label}** — latest "
         f"{len(source_events)} events ({cache_label})"
     )
-    chunks = _discord_text_chunks(recap_text)
+    chunks = discord_text_chunks(recap_text)
     if all_servers:
         guild_line = guild_scope_line(source_events)
         await interaction.followup.send(
@@ -1025,20 +971,11 @@ async def bear_player(
 
     lines.append("**Recent results**")
     for result in history:
-        date_label = result["event_date"] or "Unknown date"
-        if result["event_time"]:
-            date_label += f" {result['event_time']}"
-        channel_prefix = ""
-        if all_channels or all_servers:
-            server_prefix = ""
-            if all_servers:
-                server_prefix = guild_label(
-                    result["discord_guild_name"], result["discord_guild_id"]
-                ) + " / "
-            channel_prefix = f"{server_prefix}#{channel_label(result['discord_channel_name'])} — "
-        uncertain = " ⚠️" if result["uncertain"] else ""
+        context, uncertain = player_result_context(
+            result, all_channels, all_servers
+        )
         lines.append(
-            f"{channel_prefix}{date_label} — {result['player_name']} "
+            f"{context} — {result['player_name']} "
             f"#{result['rank']} — {result['damage']:,}{uncertain}"
         )
 
@@ -1063,32 +1000,25 @@ def _player_stats_chunks(summary, history, scope, all_channels=False,
         guild_line = guild_scope_line(history)
         if guild_line:
             lines.insert(2, guild_line)
-    chunks = []
-    current = lines
+    rows = []
     for result in history:
-        date_label = result["event_date"] or "Unknown date"
-        if result["event_time"]:
-            date_label += f" {result['event_time']}"
-        channel_prefix = ""
-        if all_channels or all_servers:
-            server_prefix = ""
-            if all_servers:
-                server_prefix = guild_label(
-                    result["discord_guild_name"], result["discord_guild_id"]
-                ) + " / "
-            channel_prefix = f"{server_prefix}#{channel_label(result['discord_channel_name'])} — "
-        uncertain = " ⚠️" if result["uncertain"] else ""
+        context, uncertain = player_result_context(
+            result, all_channels, all_servers
+        )
         row = (
-            f"Event **{result['event_id']}** — {channel_prefix}{date_label} — "
+            f"Event **{result['event_id']}** — {context} — "
             f"{result['event_type']} — rank **#{result['rank']}** — "
             f"**{result['damage']:,}** damage{uncertain}"
         )
-        if len("\n".join(current + [row])) > max_message_length:
-            chunks.append("\n".join(current))
-            current = [f"🐻 **{summary['player_name']} event results (continued)**"]
-        current.append(row)
-    chunks.append("\n".join(current))
-    return chunks
+        rows.append(row)
+    return line_chunks(
+        lines,
+        rows,
+        continued_lines=[
+            f"🐻 **{summary['player_name']} event results (continued)**"
+        ],
+        max_length=max_message_length,
+    )
 
 
 @bear_player_group.command(
@@ -1166,21 +1096,25 @@ async def bear_player_list(
     else:
         header = "ID    Events  Player"
         separator = "----  ------  ------------------------------"
-    chunks = []
-    current = [title, "```text", header, separator]
+    rows = []
     for player in players:
         name = player.get_canonical_name().replace("`", "ˋ")
         if all_servers:
             guild = bot.get_guild(int(player.get_guild_id()))
-            server = _table_text(getattr(guild, "name", None) or player.get_guild_id(), 16)
+            server = table_text(
+                getattr(guild, "name", None) or player.get_guild_id(), 16
+            )
             row = f"{player.get_guild_id():<19}  {server:<16}  {player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
         else:
             row = f"{player.get_player_id():<4}  {player.get_event_count():<6}  {name}"
-        if len("\n".join(current + [row, "```"] )) > 1900:
-            current.append("```"); chunks.append("\n".join(current))
-            current = ["🐻 **Canonical players (continued)**", "```text", header, separator]
-        current.append(row)
-    current.append("```"); chunks.append("\n".join(current))
+        rows.append(row)
+    chunks = code_table_chunks(
+        header,
+        separator,
+        rows,
+        title=title,
+        continued_title="🐻 **Canonical players (continued)**",
+    )
     if len(players) == 100:
         chunks[-1] += "\nShowing the first 100 players."
     for chunk in chunks:
@@ -1256,15 +1190,20 @@ async def bear_event_list(
         rallies = event.get_rallies() if event.get_rallies() is not None else "-"
         damage = f"{event.get_alliance_damage():,}" if event.get_alliance_damage() is not None else "-"
         if all_servers:
-            server = _table_text(event.get_discord_guild_name() or event.get_discord_guild_id() or "unknown", 13)
-            name = _table_text(channel_label(event.get_discord_channel_name()), 12)
+            server = table_text(
+                event.get_discord_guild_name()
+                or event.get_discord_guild_id()
+                or "unknown",
+                13,
+            )
+            name = table_text(channel_label(event.get_discord_channel_name()), 12)
             rows.append(f"{event.get_discord_guild_id():<19}  {server:<13}  {name:<12}  {event.get_event_id():<5}  {timestamp:<20}  {damage}")
         elif all_channels:
-            name = _table_text(channel_label(event.get_discord_channel_name()), 18)
+            name = table_text(channel_label(event.get_discord_channel_name()), 18)
             rows.append(f"{name:<18}  {event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
         else:
             rows.append(f"{event.get_event_id():<4}  {timestamp:<20}  {str(rallies):<7}  {damage}")
-    chunks = _code_table_chunks(title, header, separator, rows)
+    chunks = code_table_chunks(header, separator, rows, title=title)
     if len(events) == 50: chunks[-1] += "\nShowing the latest 50 events."
     for chunk in chunks:
         await interaction.followup.send(chunk, ephemeral=True)
@@ -1348,17 +1287,11 @@ async def bear_event_trend(
     scope = await prepare_report_scope(interaction, channel, all_channels, all_servers)
     if scope is None:
         return
-    if months not in (1, 3):
-        await interaction.response.send_message(
-            "❌ Choose either `months: 1` or `months: 3`.",
-            ephemeral=True
-        )
+    since_date = await prepare_trend_since_date(interaction, months)
+    if since_date is None:
         return
 
     await interaction.response.defer(thinking=True)
-    since_date = (
-        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
-    ).isoformat()
     rows = await asyncio.to_thread(
         repository.fetch_event_trend,
         scope.channel_id,
@@ -1402,17 +1335,11 @@ async def bear_player_trend(
     scope = await prepare_report_scope(interaction, channel, all_channels, all_servers)
     if scope is None:
         return
-    if months not in (1, 3):
-        await interaction.response.send_message(
-            "❌ Choose either `months: 1` or `months: 3`.",
-            ephemeral=True
-        )
+    since_date = await prepare_trend_since_date(interaction, months)
+    if since_date is None:
         return
 
     await interaction.response.defer(thinking=True)
-    since_date = (
-        datetime.now(timezone.utc).date() - timedelta(days=months * 30)
-    ).isoformat()
     rows = await asyncio.to_thread(
         repository.fetch_player_trend,
         scope.channel_id,

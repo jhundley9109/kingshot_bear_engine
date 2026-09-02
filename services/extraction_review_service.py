@@ -1,5 +1,7 @@
+from services.discord_formatting import DISCORD_MESSAGE_LIMIT
+
+
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
-DISCORD_MESSAGE_LIMIT = 1900
 
 
 def find_image_attachments(attachments):
