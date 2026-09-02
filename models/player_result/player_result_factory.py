@@ -19,16 +19,25 @@ class PlayerResultFactory:
     def replace_player_result_models_by_event_id(self, event_id, models, connection):
         connection.execute("DELETE FROM player_results WHERE event_id = ?", (event_id,))
         connection.executemany("INSERT INTO player_results (event_id, player_id, rank, player_name, damage, uncertain) VALUES (?, ?, ?, ?, ?, ?)", [(event_id, model.get_player_id(), model.get_rank(), model.get_raw_player_name(), model.get_damage(), int(model.get_uncertain())) for model in models])
-    def get_leaderboard_rows(self, channel_id, limit=None):
+    def get_leaderboard_rows(self, channel_id, guild_id, limit=None):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
             event_total_where = ""
             result_where = ""
             params = []
+            event_clauses = []; result_clauses = []; scope_params = []
+            if guild_id is not None:
+                event_clauses.append("discord_guild_id = ?")
+                result_clauses.append("events.discord_guild_id = ?")
+                scope_params.append(str(guild_id))
             if channel_id is not None:
-                event_total_where = "WHERE discord_channel_id = ?"
-                result_where = "WHERE events.discord_channel_id = ?"
-                params.extend([str(channel_id), str(channel_id)])
+                event_clauses.append("discord_channel_id = ?")
+                result_clauses.append("events.discord_channel_id = ?")
+                scope_params.append(str(channel_id))
+            if event_clauses:
+                event_total_where = "WHERE " + " AND ".join(event_clauses)
+                result_where = "WHERE " + " AND ".join(result_clauses)
+                params.extend(scope_params + scope_params)
             sql = """SELECT players.canonical_name AS player_name,
                 COUNT(DISTINCT player_results.event_id) AS appearances,
                 SUM(damage) AS total_damage,
@@ -54,11 +63,14 @@ class PlayerResultFactory:
                 params.append(limit)
             return connection.execute(sql, params).fetchall()
         finally: connection.close()
-    def get_player_search_rows(self, channel_id, search_text):
+    def get_player_search_rows(self, channel_id, guild_id, search_text):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row; pattern = f"%{search_text}%"
         try:
             where = "players.canonical_name LIKE ? COLLATE NOCASE"
             params = [pattern]
+            if guild_id is not None:
+                where = "events.discord_guild_id = ? AND " + where
+                params.insert(0, str(guild_id))
             if channel_id is not None:
                 where = "events.discord_channel_id = ? AND " + where
                 params.insert(0, str(channel_id))
@@ -73,6 +85,7 @@ class PlayerResultFactory:
                 ORDER BY appearances DESC, player_name ASC LIMIT 10""", params).fetchall()
             history = connection.execute(f"""SELECT events.event_type,
                 events.event_date, events.event_time, events.discord_channel_name,
+                events.discord_guild_id, events.discord_guild_name,
                 players.canonical_name AS player_name, player_results.rank,
                 player_results.damage, player_results.uncertain
                 FROM player_results
@@ -83,25 +96,34 @@ class PlayerResultFactory:
                 player_results.rank ASC LIMIT 10""", params).fetchall(); return names, history
         finally: connection.close()
 
-    def get_player_stats_rows(self, channel_id, player_name):
+    def get_player_stats_rows(self, channel_id, guild_id, player_name):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
             normalized_name = self._normalize_player_name(player_name)
+            match_where = """(player_aliases.normalized_name = ?
+                      OR players.canonical_name = ? COLLATE NOCASE)"""
+            match_params = [normalized_name, player_name.strip()]
+            if guild_id is not None:
+                match_where = "player_aliases.guild_id = ? AND " + match_where
+                match_params.insert(0, str(guild_id))
             matches = connection.execute(
                 """SELECT DISTINCT players.id, players.canonical_name
                    FROM players
                    JOIN player_aliases ON player_aliases.player_id = players.id
-                   WHERE player_aliases.normalized_name = ?
-                      OR players.canonical_name = ? COLLATE NOCASE
-                   ORDER BY players.canonical_name ASC""",
-                (normalized_name, player_name.strip())
+                   WHERE {match_where}
+                   ORDER BY players.canonical_name ASC""".format(match_where=match_where),
+                match_params
             ).fetchall()
             if not matches:
                 return None, []
 
-            player = matches[0]
-            where = "player_results.player_id = ?"
-            params = [player["id"]]
+            player_ids = [match["id"] for match in matches]
+            placeholders = ",".join("?" for _ in player_ids)
+            where = f"player_results.player_id IN ({placeholders})"
+            params = list(player_ids)
+            if guild_id is not None:
+                where += " AND events.discord_guild_id = ?"
+                params.append(str(guild_id))
             if channel_id is not None:
                 where += " AND events.discord_channel_id = ?"
                 params.append(str(channel_id))
@@ -117,7 +139,7 @@ class PlayerResultFactory:
                     JOIN events ON events.id = player_results.event_id
                     JOIN players ON players.id = player_results.player_id
                     WHERE {where}
-                    GROUP BY players.id""",
+                    """,
                 params
             ).fetchone()
             if summary is None:
@@ -126,7 +148,8 @@ class PlayerResultFactory:
             history = connection.execute(
                 f"""SELECT events.id AS event_id, events.event_type,
                     events.event_date, events.event_time,
-                    events.discord_channel_name, player_results.rank,
+                    events.discord_channel_name, events.discord_guild_id,
+                    events.discord_guild_name, player_results.rank,
                     player_results.damage, player_results.uncertain
                     FROM player_results
                     JOIN events ON events.id = player_results.event_id
@@ -148,13 +171,16 @@ class PlayerResultFactory:
         normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
         return " ".join(normalized.split())
 
-    def get_player_trend_rows(self, channel_id, search_text, since_date):
+    def get_player_trend_rows(self, channel_id, guild_id, search_text, since_date):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
             pattern = f"%{search_text}%"
             where = """players.canonical_name LIKE ? COLLATE NOCASE
                   AND events.event_date >= ?"""
             params = [pattern, since_date]
+            if guild_id is not None:
+                where = "events.discord_guild_id = ? AND " + where
+                params.insert(0, str(guild_id))
             if channel_id is not None:
                 where = "events.discord_channel_id = ? AND " + where
                 params.insert(0, str(channel_id))

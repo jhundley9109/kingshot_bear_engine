@@ -12,6 +12,8 @@ class EventModel:
         discord_message_id=None,
         discord_channel_id=None,
         discord_channel_name=None,
+        discord_guild_id=None,
+        discord_guild_name=None,
         created_at=None
     ):
         self._event_id = event_id
@@ -24,6 +26,8 @@ class EventModel:
         self._discord_message_id = discord_message_id
         self._discord_channel_id = discord_channel_id
         self._discord_channel_name = discord_channel_name
+        self._discord_guild_id = discord_guild_id
+        self._discord_guild_name = discord_guild_name
         self._created_at = created_at
 
     def get_event_id(self): return self._event_id
@@ -36,6 +40,8 @@ class EventModel:
     def get_discord_message_id(self): return self._discord_message_id
     def get_discord_channel_id(self): return self._discord_channel_id
     def get_discord_channel_name(self): return self._discord_channel_name
+    def get_discord_guild_id(self): return self._discord_guild_id
+    def get_discord_guild_name(self): return self._discord_guild_name
     def get_created_at(self): return self._created_at
 
     def set_event_id(self, value): self._event_id = value
@@ -48,4 +54,6 @@ class EventModel:
     def set_discord_message_id(self, value): self._discord_message_id = value
     def set_discord_channel_id(self, value): self._discord_channel_id = value
     def set_discord_channel_name(self, value): self._discord_channel_name = value
+    def set_discord_guild_id(self, value): self._discord_guild_id = value
+    def set_discord_guild_name(self, value): self._discord_guild_name = value
     def set_created_at(self, value): self._created_at = value

@@ -17,7 +17,8 @@ def build_recap_data(events, results):
     for result in results:
         item = dict(result)
         item["event_position"] = event_position[item["event_id"]]
-        by_player[item["player_name"]].append(item)
+        player_key = (item.get("discord_guild_id"), item["player_name"])
+        by_player[player_key].append(item)
         participant_counts[item["event_id"]] += 1
 
     for position, event in enumerate(event_data):
@@ -36,7 +37,7 @@ def build_recap_data(events, results):
                 )
 
     players = []
-    for player_name, appearances in by_player.items():
+    for (guild_id, player_name), appearances in by_player.items():
         appearances.sort(key=lambda item: item["event_position"])
         damage_values = [item["damage"] for item in appearances]
         latest = appearances[0]
@@ -47,6 +48,8 @@ def build_recap_data(events, results):
             change_percent = round(change * 100 / previous["damage"], 1)
         players.append({
             "name": player_name,
+            "server_id": guild_id,
+            "server_name": appearances[0].get("discord_guild_name"),
             "events_participated": len(appearances),
             "average_damage": round(sum(damage_values) / len(damage_values)),
             "window_best_damage": max(damage_values),

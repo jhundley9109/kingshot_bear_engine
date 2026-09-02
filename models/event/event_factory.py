@@ -24,11 +24,13 @@ class EventFactory:
                     discord_message_id TEXT,
                     discord_channel_id TEXT,
                     discord_channel_name TEXT,
+                    discord_guild_id TEXT,
+                    discord_guild_name TEXT,
                     created_at TEXT NOT NULL
                 )
             """)
             columns = {row[1] for row in cursor.execute("PRAGMA table_info(events)")}
-            for name in ("event_time", "discord_message_id", "discord_channel_id", "discord_channel_name"):
+            for name in ("event_time", "discord_message_id", "discord_channel_id", "discord_channel_name", "discord_guild_id", "discord_guild_name"):
                 if name not in columns:
                     cursor.execute(f"ALTER TABLE events ADD COLUMN {name} TEXT")
             connection.commit()
@@ -44,6 +46,8 @@ class EventFactory:
             discord_message_id=row["discord_message_id"],
             discord_channel_id=row["discord_channel_id"],
             discord_channel_name=row["discord_channel_name"],
+            discord_guild_id=row["discord_guild_id"],
+            discord_guild_name=row["discord_guild_name"],
             created_at=row["created_at"]
         )
 
@@ -58,20 +62,20 @@ class EventFactory:
             if owns_connection:
                 connection.close()
 
-    def get_latest_event_model_by_channel_id(self, channel_id=None):
+    def get_latest_event_model(self, channel_id=None, guild_id=None):
         connection = self._connection_factory()
         connection.row_factory = sqlite3.Row
         try:
-            if channel_id is None:
-                row = connection.execute(
-                    "SELECT * FROM events ORDER BY created_at DESC, id DESC LIMIT 1"
-                ).fetchone()
-            else:
-                row = connection.execute(
-                    """SELECT * FROM events WHERE discord_channel_id = ?
-                       ORDER BY created_at DESC, id DESC LIMIT 1""",
-                    (str(channel_id),)
-                ).fetchone()
+            clauses = []; params = []
+            if guild_id is not None:
+                clauses.append("discord_guild_id = ?"); params.append(str(guild_id))
+            if channel_id is not None:
+                clauses.append("discord_channel_id = ?"); params.append(str(channel_id))
+            where = "WHERE " + " AND ".join(clauses) if clauses else ""
+            row = connection.execute(
+                f"SELECT * FROM events {where} ORDER BY created_at DESC, id DESC LIMIT 1",
+                params
+            ).fetchone()
             return self._to_model(row) if row else None
         finally:
             connection.close()
@@ -110,6 +114,7 @@ class EventFactory:
             event_model.get_alliance_damage(), event_model.get_submitted_by(),
             event_model.get_discord_message_id(), event_model.get_discord_channel_id(),
             event_model.get_discord_channel_name(), event_model.get_created_at()
+            , event_model.get_discord_guild_id(), event_model.get_discord_guild_name()
         )
         cursor = connection.cursor()
         if event_model.get_event_id() is None:
@@ -117,8 +122,9 @@ class EventFactory:
                 """INSERT INTO events (
                     event_type, event_date, event_time, rallies, alliance_damage,
                     submitted_by, discord_message_id, discord_channel_id,
-                    discord_channel_name, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    discord_channel_name, created_at, discord_guild_id,
+                    discord_guild_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 values
             )
             event_model.set_event_id(cursor.lastrowid)
@@ -127,18 +133,22 @@ class EventFactory:
                 """UPDATE events SET event_type = ?, event_date = ?, event_time = ?,
                     rallies = ?, alliance_damage = ?, submitted_by = ?,
                     discord_message_id = ?, discord_channel_id = ?,
-                    discord_channel_name = ?, created_at = ? WHERE id = ?""",
+                    discord_channel_name = ?, created_at = ?,
+                    discord_guild_id = ?, discord_guild_name = ? WHERE id = ?""",
                 values + (event_model.get_event_id(),)
             )
             if cursor.rowcount != 1:
                 raise ValueError("The existing report could not be found.")
         return event_model
 
-    def get_event_trend_rows(self, channel_id, since_date):
+    def get_event_trend_rows(self, channel_id, guild_id, since_date):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
             where = "events.event_date >= ?"
             params = [since_date]
+            if guild_id is not None:
+                where = "events.discord_guild_id = ? AND " + where
+                params.insert(0, str(guild_id))
             if channel_id is not None:
                 where = "events.discord_channel_id = ? AND " + where
                 params.insert(0, str(channel_id))
@@ -155,22 +165,22 @@ class EventFactory:
             ).fetchall()
         finally: connection.close()
 
-    def get_event_models_by_channel_id(self, channel_id=None, limit=50):
+    def get_event_models(self, channel_id=None, guild_id=None, limit=50):
         connection = self._connection_factory(); connection.row_factory = sqlite3.Row
         try:
-            if channel_id is None:
-                rows = connection.execute(
-                    """SELECT * FROM events
-                       ORDER BY discord_channel_name ASC,
-                       event_date DESC, event_time DESC, id DESC LIMIT ?""",
-                    (limit,)
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    """SELECT * FROM events WHERE discord_channel_id = ?
-                       ORDER BY event_date DESC, event_time DESC, id DESC LIMIT ?""",
-                    (str(channel_id), limit)
-                ).fetchall()
+            clauses = []; params = []
+            if guild_id is not None:
+                clauses.append("discord_guild_id = ?"); params.append(str(guild_id))
+            if channel_id is not None:
+                clauses.append("discord_channel_id = ?"); params.append(str(channel_id))
+            where = "WHERE " + " AND ".join(clauses) if clauses else ""
+            params.append(limit)
+            rows = connection.execute(
+                f"""SELECT * FROM events {where}
+                    ORDER BY discord_guild_name ASC, discord_channel_name ASC,
+                    event_date DESC, event_time DESC, id DESC LIMIT ?""",
+                params
+            ).fetchall()
             return [self._to_model(row) for row in rows]
         finally: connection.close()
 

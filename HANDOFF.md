@@ -33,16 +33,19 @@ The `.env` file is required and must not be committed.
 ```env
 DISCORD_TOKEN=...
 OPENAI_API_KEY=...
-GUILD_ID=...
+GUILD_IDS=123456789,987654321
+BOT_OWNER_IDS=123456789
 ```
 
 `DISCORD_TOKEN` is the Discord bot token.
 
 `OPENAI_API_KEY` is used for screenshot parsing.
 
-`GUILD_ID` is the Discord server ID where guild-scoped slash/context-menu commands are synced.
+`GUILD_IDS` is a comma-separated list of Discord servers where guild-scoped slash/context-menu commands are synced. The first ID owns legacy rows created before multi-server support. A single `GUILD_ID` remains supported for backwards compatibility.
 
-To run the same bot on a different Discord server, update `GUILD_ID`, invite the bot to that server, and restart the process. Only change `DISCORD_TOKEN` if switching to a different Discord application/bot.
+`BOT_OWNER_IDS` is a comma-separated allowlist of Discord user IDs permitted to use `all_servers:true`.
+
+Invite the same bot application to each configured server and restart the one bot process after changing these values. Do not run multiple processes with the same bot token or share the SQLite file between machines.
 
 ## Running The Bot
 
@@ -205,6 +208,7 @@ Reporting commands also support optional scope parameters:
 ```text
 channel:#bear-trap-2
 all_channels:true
+all_servers:true
 ```
 
 Useful test-channel examples:
@@ -218,7 +222,7 @@ Useful test-channel examples:
 /bear event trend months:1 all_channels:true
 ```
 
-`/bear event list all_channels:true` includes the source channel name so saved events can be reviewed from a private testing/admin channel.
+`all_channels:true` stays inside the server where the command is run. `all_servers:true` crosses every configured server and is rejected unless the caller is listed in `BOT_OWNER_IDS`. Choose only one scope option per command.
 
 ## Data Model
 
@@ -245,6 +249,8 @@ submitted_by
 discord_message_id
 discord_channel_id
 discord_channel_name
+discord_guild_id
+discord_guild_name
 created_at
 ```
 
@@ -253,6 +259,7 @@ players
 -------
 id
 canonical_name
+guild_id
 created_at
 updated_at
 ```
@@ -265,6 +272,7 @@ player_id
 alias_name
 normalized_name
 visual_key
+guild_id
 ```
 
 ```text
