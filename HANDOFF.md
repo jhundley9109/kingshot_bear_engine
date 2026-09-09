@@ -196,50 +196,48 @@ Root commands:
 /bear status
 /bear summary
 /bear leaderboard
-/bear recap events:<2-10>
+/bear recap
+/bear calculator
 ```
 
 Player commands:
 
 ```text
 /bear player list [all_servers:true]
-/bear player search name:<name>
-/bear player stats playername:<name>
-/bear player rename old_name:<old> new_name:<new>
-/bear player trend name:<name> months:<1|3>
+/bear player search
+/bear player stats
+/bear player rename
+/bear player trend
 ```
 
 Event commands:
 
 ```text
 /bear event list
-/bear event details event_id:<id>
-/bear event delete event_id:<id>
-/bear event trend months:<1|3>
+/bear event details
+/bear event delete
+/bear event trend
 ```
 
-Most reporting commands default to the Discord channel where they are run. This keeps `#bear-trap-1` and `#bear-trap-2` separated naturally.
+Commands that need multiple inputs open a Discord form. Required values such as player name or a deletion's event ID must be filled in before submission. Optional values remain optional, and choices such as recap count or trend range have defaults.
 
-Reporting commands also support optional scope parameters:
+In `/bear event details`, Event ID is optional. Leaving it blank shows the most recent saved event in the selected scope.
+
+`/bear event trend` charts each event's total alliance damage, participant count, and total rallies over the selected one- or three-month period. Every point is labeled with its event date and saved Event ID; unavailable extracted totals are shown as `N/A` rather than zero.
+
+`/bear calculator` opens a five-field troop form for Infantry, Cavalry, Archers, march capacity, and the lead-march ratio. It reserves the lead march and compares deployment recommendations for two through five joiners. Joiner ratios reserve at least 1% of every troop type per march, then fill Archers, Cavalry, and Infantry in that order.
+
+Reporting forms include a scope selector:
 
 ```text
-channel:#bear-trap-2
-all_channels:true
-all_servers:true
+Current or selected channel
+All channels in this server
+All configured servers (owner only)
 ```
 
-Useful test-channel examples:
+The current/selected channel scope defaults to the channel where the command was run. Its optional channel picker can target another text channel. The all-channels scope stays inside the current server. The all-servers scope crosses every configured server and is rejected unless the caller is listed in `BOT_OWNER_IDS`.
 
-```text
-/bear event list all_channels:true
-/bear leaderboard all_channels:true
-/bear summary channel:#bear-trap-2
-/bear player search name:lord stark all_channels:true
-/bear player trend name:lord stark months:1 all_channels:true
-/bear event trend months:1 all_channels:true
-```
-
-`all_channels:true` stays inside the server where the command is run. `all_servers:true` crosses every configured server and is rejected unless the caller is listed in `BOT_OWNER_IDS`. Choose only one scope option per command.
+`/bear player list` retains its single optional `all_servers` slash-command option rather than opening a form.
 
 ## Data Model
 
@@ -326,10 +324,22 @@ models/
     player_result_factory.py
     player_result_model.py
 services/
+  discord_formatting.py
+  extraction_review_service.py
+  recap_service.py
   trend_chart_service.py
+views/
+  command_forms.py
+  review_views.py
+commands/
+  event_commands.py
+  player_commands.py
+  process_command.py
+  root_commands.py
+  support.py
 ```
 
-`bot.py` owns Discord setup, slash commands, context-menu processing, review buttons, formatting, and the OpenAI extraction prompt.
+`bot.py` is the composition root for configuration, dependency construction, command groups, and startup. Command handlers, Discord forms/views, formatting, and OpenAI request construction live in their focused modules.
 
 `data_access.py` exposes the `BearTrapRepository`, which coordinates database writes across events, players, aliases, and player results.
 
@@ -350,7 +360,7 @@ Model classes expose getters and setters for table fields.
 
 Restart the bot after changing command signatures, command descriptions, or guild configuration so Discord command sync can run again.
 
-Use a private Discord test channel for testing reports without cluttering the real Bear channel. Reporting commands can read real Bear data from the test channel using `channel:` or `all_channels:true`.
+Use a private Discord test channel for testing reports without cluttering the real Bear channel. Reporting forms can read real Bear data by choosing another channel or a broader scope.
 
 Back up the SQLite database before manual cleanup:
 

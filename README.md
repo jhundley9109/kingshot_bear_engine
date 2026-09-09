@@ -50,6 +50,8 @@ Current functionality includes:
 - Missing rank detection
 - Uncertain OCR result warnings
 - Discord preview of extracted results
+- Event comparison charts for total damage, participants, and rallies
+- Bear troop calculator with lead-march and 2–5 joiner recommendations
 
 Planned functionality includes:
 
@@ -59,9 +61,7 @@ Planned functionality includes:
 - Bear Trap 1 and Bear Trap 2 tracking
 - Player performance history
 - Alliance leaderboards
-- Event-to-event comparisons
 - Personal best tracking
-- Participation statistics
 - AI-generated alliance summaries
 
 ---
@@ -406,7 +406,7 @@ The bot should now appear online in Discord.
 The project includes a basic test command:
 
 ```text
-/bear
+/bear status
 ```
 
 If everything is configured correctly, the bot should respond:

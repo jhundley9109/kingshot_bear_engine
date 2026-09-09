@@ -7,6 +7,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from commands.calculator_command import register_calculator_command
 from commands.event_commands import register_event_commands
 from commands.player_commands import register_player_commands
 from commands.process_command import register_process_command
@@ -74,6 +75,7 @@ register_root_commands(
     BOT_OWNER_IDS,
     log_event,
 )
+register_calculator_command(bear_group, log_event)
 register_player_commands(
     bear_player_group,
     repository,
