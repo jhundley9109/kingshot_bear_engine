@@ -1,5 +1,5 @@
 # Discord bot runtime dependencies
-discord.py>=2.5,<3
+discord.py>=2.6,<3
 openai>=1,<3
 python-dotenv>=1,<2
 matplotlib>=3.9

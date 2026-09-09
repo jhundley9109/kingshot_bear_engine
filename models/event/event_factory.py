@@ -153,7 +153,8 @@ class EventFactory:
                 where = "events.discord_channel_id = ? AND " + where
                 params.insert(0, str(channel_id))
             return connection.execute(
-                f"""SELECT events.event_date, events.event_time, events.rallies,
+                f"""SELECT events.id AS event_id, events.event_type,
+                    events.event_date, events.event_time, events.rallies,
                     events.alliance_damage, events.discord_channel_name,
                     events.discord_guild_id, events.discord_guild_name,
                     COUNT(player_results.id) AS participant_count

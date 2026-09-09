@@ -12,11 +12,11 @@ from services.discord_formatting import (
     code_table_chunks,
     guild_label,
     guild_scope_line,
-    line_chunks,
     player_result_context,
     table_text,
 )
 from services.trend_chart_service import create_player_trend_chart
+from views.command_forms import SelectField, TextField, command_form
 
 
 def _player_stats_chunks(
@@ -27,7 +27,7 @@ def _player_stats_chunks(
     all_servers=False,
     max_message_length=1900,
 ):
-    lines = [
+    summary_lines = [
         f"🐻 **Player stats: {summary['player_name']}**",
         f"Scope: **{scope}**",
         f"Events: **{summary['appearances']:,}**",
@@ -41,24 +41,71 @@ def _player_stats_chunks(
     if all_servers:
         guild_line = guild_scope_line(history)
         if guild_line:
-            lines.insert(2, guild_line)
+            summary_lines.insert(2, guild_line)
+
+    if all_servers:
+        header = (
+            f"{'Server':<19}  {'Channel':<16}  {'Event':>5}  "
+            f"{'Date / Time':<19}  {'Type':<16}  {'Rank':>4}  "
+            f"{'Damage':>15}  {'OCR':>3}"
+        )
+        separator = (
+            f"{'-' * 19}  {'-' * 16}  {'-' * 5}  {'-' * 19}  "
+            f"{'-' * 16}  {'-' * 4}  {'-' * 15}  {'-' * 3}"
+        )
+    elif all_channels:
+        header = (
+            f"{'Channel':<18}  {'Event':>5}  {'Date / Time':<19}  "
+            f"{'Type':<16}  {'Rank':>4}  {'Damage':>15}  {'OCR':>3}"
+        )
+        separator = (
+            f"{'-' * 18}  {'-' * 5}  {'-' * 19}  {'-' * 16}  "
+            f"{'-' * 4}  {'-' * 15}  {'-' * 3}"
+        )
+    else:
+        header = (
+            f"{'Event':>5}  {'Date / Time':<19}  {'Type':<16}  "
+            f"{'Rank':>4}  {'Damage':>15}  {'OCR':>3}"
+        )
+        separator = (
+            f"{'-' * 5}  {'-' * 19}  {'-' * 16}  {'-' * 4}  "
+            f"{'-' * 15}  {'-' * 3}"
+        )
 
     rows = []
     for result in history:
-        context, uncertain = player_result_context(
-            result, all_channels, all_servers
+        timestamp = result["event_date"] or "Unknown date"
+        if result["event_time"]:
+            timestamp += f" {result['event_time']}"
+        event_type = table_text(result["event_type"], 16)
+        ocr_flag = "!" if result["uncertain"] else ""
+        row = (
+            f"{result['event_id']:>5}  {timestamp:<19}  {event_type:<16}  "
+            f"{'#' + str(result['rank']):>4}  {result['damage']:>15,}  "
+            f"{ocr_flag:>3}"
         )
-        rows.append(
-            f"Event **{result['event_id']}** — {context} — "
-            f"{result['event_type']} — rank **#{result['rank']}** — "
-            f"**{result['damage']:,}** damage{uncertain}"
-        )
-    return line_chunks(
-        lines,
+        if all_channels or all_servers:
+            channel = table_text(
+                result["discord_channel_name"] or "unknown-channel",
+                16 if all_servers else 18,
+            )
+            row = f"{channel:<{16 if all_servers else 18}}  {row}"
+        if all_servers:
+            server = table_text(
+                result["discord_guild_name"]
+                or result["discord_guild_id"]
+                or "unknown-server",
+                19,
+            )
+            row = f"{server:<19}  {row}"
+        rows.append(row)
+
+    return code_table_chunks(
+        header,
+        separator,
         rows,
-        continued_lines=[
-            f"🐻 **{summary['player_name']} event results (continued)**"
-        ],
+        title="\n".join(summary_lines),
+        continued_title=f"🐻 **{summary['player_name']} event results (continued)**",
         max_length=max_message_length,
     )
 
@@ -68,12 +115,19 @@ def register_player_commands(group, repository, bot, bot_owner_ids, log_event):
         name="search",
         description="Search a player's saved Bear Trap history",
     )
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Search across this server",
-        all_servers="Owner only: search every configured server",
-    )
     @log_discord_request(log_event, "/bear player search")
+    @command_form(
+        "Search player history",
+        fields=(
+            TextField(
+                name="name",
+                label="Player name",
+                placeholder="Name or saved alias",
+                required=True,
+            ),
+        ),
+        include_scope=True,
+    )
     async def search(
         interaction: discord.Interaction,
         name: str,
@@ -133,13 +187,19 @@ def register_player_commands(group, repository, bot, bot_owner_ids, log_event):
         name="stats",
         description="Show a player's totals and stats for every participating event",
     )
-    @app_commands.describe(
-        playername="Player name or saved alias",
-        channel="Optional Bear channel to read from",
-        all_channels="Include events across this server",
-        all_servers="Owner only: include every configured server",
-    )
     @log_discord_request(log_event, "/bear player stats")
+    @command_form(
+        "Player statistics",
+        fields=(
+            TextField(
+                name="playername",
+                label="Player name",
+                placeholder="Name or saved alias",
+                required=True,
+            ),
+        ),
+        include_scope=True,
+    )
     async def stats(
         interaction: discord.Interaction,
         playername: str,
@@ -249,6 +309,21 @@ def register_player_commands(group, repository, bot, bot_owner_ids, log_event):
         description="Set a player's canonical name while preserving old aliases",
     )
     @log_discord_request(log_event, "/bear player rename")
+    @command_form(
+        "Rename player",
+        fields=(
+            TextField(
+                name="old_name",
+                label="Current name or alias",
+                required=True,
+            ),
+            TextField(
+                name="new_name",
+                label="New canonical name",
+                required=True,
+            ),
+        ),
+    )
     async def rename(
         interaction: discord.Interaction,
         old_name: str,
@@ -277,12 +352,28 @@ def register_player_commands(group, repository, bot, bot_owner_ids, log_event):
         name="trend",
         description="Chart a player's damage over the last one or three months",
     )
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Chart player results across this server",
-        all_servers="Owner only: chart across every configured server",
-    )
     @log_discord_request(log_event, "/bear player trend")
+    @command_form(
+        "Player damage trend",
+        fields=(
+            TextField(
+                name="name",
+                label="Player name",
+                placeholder="Name or saved alias",
+                required=True,
+            ),
+            SelectField(
+                name="months",
+                label="Time range",
+                options=(
+                    ("1 month", "1", True),
+                    ("3 months", "3", False),
+                ),
+                parser=int,
+            ),
+        ),
+        include_scope=True,
+    )
     async def trend(
         interaction: discord.Interaction,
         name: str,

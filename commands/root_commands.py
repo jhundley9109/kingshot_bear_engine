@@ -1,7 +1,6 @@
 import asyncio
 
 import discord
-from discord import app_commands
 
 from commands.support import log_discord_request, prepare_report_scope
 from services.discord_formatting import (
@@ -18,6 +17,12 @@ from services.recap_service import (
     build_recap_data,
     generate_bear_recap,
     recap_cache_key,
+)
+from views.command_forms import (
+    SelectField,
+    TextField,
+    command_form,
+    integer_value,
 )
 
 
@@ -62,12 +67,8 @@ def register_root_commands(
         name="summary",
         description="Show the most recently saved Bear Trap report",
     )
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Show the latest report across this server",
-        all_servers="Owner only: include every configured server",
-    )
     @log_discord_request(log_event, "/bear summary")
+    @command_form("Bear Trap summary", include_scope=True)
     async def summary(
         interaction: discord.Interaction,
         channel: discord.TextChannel = None,
@@ -127,13 +128,20 @@ def register_root_commands(
         name="leaderboard",
         description="Rank players by total saved Bear Trap damage",
     )
-    @app_commands.describe(
-        limit="Maximum players to show. Use 0 or leave blank for all players.",
-        channel="Optional Bear channel to read from",
-        all_channels="Rank players across this server",
-        all_servers="Owner only: rank across every configured server",
-    )
     @log_discord_request(log_event, "/bear leaderboard")
+    @command_form(
+        "Bear Trap leaderboard",
+        fields=(
+            TextField(
+                name="limit",
+                label="Player limit (optional)",
+                placeholder="Blank or 0 shows all players",
+                parser=integer_value("Player limit", default=0, minimum=0, maximum=100),
+                max_length=3,
+            ),
+        ),
+        include_scope=True,
+    )
     async def leaderboard(
         interaction: discord.Interaction,
         limit: int = 0,
@@ -182,13 +190,22 @@ def register_root_commands(
         name="recap",
         description="Generate a funny recap from the latest Bear Trap events",
     )
-    @app_commands.describe(
-        events="Number of recent events to recap (2-10)",
-        channel="Optional Bear channel to read from",
-        all_channels="Include recent events across this server",
-        all_servers="Owner only: include every configured server",
-    )
     @log_discord_request(log_event, "/bear recap")
+    @command_form(
+        "Bear Trap recap",
+        fields=(
+            SelectField(
+                name="events",
+                label="Recent events to recap",
+                options=tuple(
+                    (str(count), str(count), count == 5)
+                    for count in range(2, 11)
+                ),
+                parser=int,
+            ),
+        ),
+        include_scope=True,
+    )
     async def recap(
         interaction: discord.Interaction,
         events: int = 5,

@@ -1,7 +1,6 @@
 import asyncio
 
 import discord
-from discord import app_commands
 
 from commands.support import (
     log_discord_request,
@@ -16,17 +15,19 @@ from services.discord_formatting import (
     table_text,
 )
 from services.trend_chart_service import create_event_trend_chart
+from views.command_forms import (
+    SelectField,
+    TextField,
+    command_form,
+    integer_value,
+)
 from views.review_views import EventDeleteView
 
 
 def register_event_commands(group, repository, bot_owner_ids, log_event):
     @group.command(name="list", description="List saved events")
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="List events from this server",
-        all_servers="Owner only: list events from every configured server",
-    )
     @log_discord_request(log_event, "/bear event list")
+    @command_form("List Bear Trap events", include_scope=True)
     async def list_events(
         interaction: discord.Interaction,
         channel: discord.TextChannel = None,
@@ -117,15 +118,23 @@ def register_event_commands(group, repository, bot_owner_ids, log_event):
             await interaction.followup.send(chunk, ephemeral=True)
 
     @group.command(name="details", description="Show details for one event ID")
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Allow lookup across this server",
-        all_servers="Owner only: allow lookup across every server",
-    )
     @log_discord_request(log_event, "/bear event details")
+    @command_form(
+        "Bear Trap event details",
+        fields=(
+            TextField(
+                name="event_id",
+                label="Event ID (optional)",
+                placeholder="Leave blank for the most recent event",
+                parser=integer_value("Event ID", minimum=1),
+                max_length=10,
+            ),
+        ),
+        include_scope=True,
+    )
     async def details(
         interaction: discord.Interaction,
-        event_id: int,
+        event_id: int = None,
         channel: discord.TextChannel = None,
         all_channels: bool = False,
         all_servers: bool = False,
@@ -136,15 +145,27 @@ def register_event_commands(group, repository, bot_owner_ids, log_event):
         if scope is None:
             return
         await interaction.response.defer(thinking=True)
-        event, results = await asyncio.to_thread(
-            repository.fetch_event_details,
-            event_id,
-            scope.channel_id,
-            scope.guild_id,
-        )
+        if event_id is None:
+            event, results = await asyncio.to_thread(
+                repository.fetch_latest_summary,
+                scope.channel_id,
+                scope.guild_id,
+            )
+        else:
+            event, results = await asyncio.to_thread(
+                repository.fetch_event_details,
+                event_id,
+                scope.channel_id,
+                scope.guild_id,
+            )
         if event is None:
+            message = (
+                "❌ No saved events exist in that scope."
+                if event_id is None
+                else "❌ No event with that ID exists in that scope."
+            )
             await interaction.followup.send(
-                "❌ No event with that ID exists in that scope.", ephemeral=True
+                message, ephemeral=True
             )
             return
         lines = [
@@ -167,12 +188,20 @@ def register_event_commands(group, repository, bot_owner_ids, log_event):
         name="delete",
         description="Delete a saved event after confirmation",
     )
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Allow deletion lookup across this server",
-        all_servers="Owner only: allow deletion lookup across every server",
-    )
     @log_discord_request(log_event, "/bear event delete")
+    @command_form(
+        "Delete Bear Trap event",
+        fields=(
+            TextField(
+                name="event_id",
+                label="Event ID",
+                required=True,
+                parser=integer_value("Event ID", minimum=1),
+                max_length=10,
+            ),
+        ),
+        include_scope=True,
+    )
     async def delete(
         interaction: discord.Interaction,
         event_id: int,
@@ -219,12 +248,22 @@ def register_event_commands(group, repository, bot_owner_ids, log_event):
         name="trend",
         description="Chart event rallies, participation, and damage over time",
     )
-    @app_commands.describe(
-        channel="Optional Bear channel to read from",
-        all_channels="Chart events across this server",
-        all_servers="Owner only: chart across every configured server",
-    )
     @log_discord_request(log_event, "/bear event trend")
+    @command_form(
+        "Bear Trap event trend",
+        fields=(
+            SelectField(
+                name="months",
+                label="Time range",
+                options=(
+                    ("1 month", "1", True),
+                    ("3 months", "3", False),
+                ),
+                parser=int,
+            ),
+        ),
+        include_scope=True,
+    )
     async def trend(
         interaction: discord.Interaction,
         months: int = 1,
