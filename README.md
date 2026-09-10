@@ -170,8 +170,12 @@ The file should contain:
 ```env
 DISCORD_TOKEN=your_discord_bot_token
 OPENAI_API_KEY=your_openai_api_key
-GUILD_ID=your_discord_server_id
+GUILD_IDS=your_discord_server_id
+BOT_OWNER_IDS=your_discord_user_id
 ```
+
+`GUILD_IDS` and `BOT_OWNER_IDS` are comma-separated lists. A single value does
+not need a trailing comma.
 
 Do **not** commit this file to Git.
 
@@ -318,12 +322,12 @@ Use the generated installation link to install the bot into your Discord server.
 
 ---
 
-# Finding Your Discord Server ID
+# Finding Your Discord Server IDs
 
-The application uses your Discord server ID as:
+The application uses a comma-separated list of Discord server IDs:
 
 ```env
-GUILD_ID=...
+GUILD_IDS=...
 ```
 
 To find it:
@@ -353,10 +357,22 @@ Copy Server ID
 Put the number into `.env`:
 
 ```env
-GUILD_ID=123456789012345678
+GUILD_IDS=123456789012345678
 ```
 
-Do not include quotes.
+For multiple servers, separate the IDs with commas. Do not include quotes or
+spaces:
+
+```env
+GUILD_IDS=123456789012345678,234567890123456789
+```
+
+Use the same CSV format for the Discord user IDs allowed to use owner-only
+commands:
+
+```env
+BOT_OWNER_IDS=345678901234567890,456789012345678901
+```
 
 ---
 
@@ -367,7 +383,8 @@ A completed `.env` will look approximately like:
 ```env
 DISCORD_TOKEN=YOUR_DISCORD_TOKEN
 OPENAI_API_KEY=YOUR_OPENAI_API_KEY
-GUILD_ID=123456789012345678
+GUILD_IDS=123456789012345678,234567890123456789
+BOT_OWNER_IDS=345678901234567890,456789012345678901
 ```
 
 These should be the actual values on the machine running the bot.
@@ -647,7 +664,7 @@ Never commit `.env`, API keys, Discord tokens, or runtime database files.
 
 Make sure:
 
-- `GUILD_ID` is correct
+- `GUILD_IDS` contains the correct server ID
 - the bot is installed in that server
 - `applications.commands` was enabled
 - the bot restarted successfully
