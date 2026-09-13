@@ -8,9 +8,12 @@ from .player_model import PlayerModel
 class PlayerFactory:
     def __init__(self, connection_factory): self._connection_factory = connection_factory
     @staticmethod
-    def normalize_name(name):
-        normalized = unicodedata.normalize("NFKC", name).casefold()
-        normalized = re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized)
+    def strip_alliance_tags(name):
+        normalized = unicodedata.normalize("NFKC", name)
+        return re.sub(r"^\s*(\[[^\]]{1,12}\]\s*)+", "", normalized).strip()
+    @classmethod
+    def normalize_name(cls, name):
+        normalized = cls.strip_alliance_tags(name).casefold()
         return " ".join(normalized.split())
     @staticmethod
     def legacy_normalize_name(name):
@@ -90,9 +93,12 @@ class PlayerFactory:
             player = self.get_player_model_by_player_id(scores[0][1], connection)
             self._add_alias(player.get_player_id(), parsed_name, guild_id, connection)
             return player
+        canonical_name = self.strip_alliance_tags(parsed_name)
+        if not canonical_name:
+            raise ValueError("Player name cannot consist only of alliance tags.")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        cursor = connection.execute("INSERT INTO players (canonical_name, guild_id, created_at, updated_at) VALUES (?, ?, ?, ?)", (parsed_name, guild_id, now, now))
-        player = PlayerModel(cursor.lastrowid, parsed_name, now, now)
+        cursor = connection.execute("INSERT INTO players (canonical_name, guild_id, created_at, updated_at) VALUES (?, ?, ?, ?)", (canonical_name, guild_id, now, now))
+        player = PlayerModel(cursor.lastrowid, canonical_name, now, now)
         self._add_alias(player.get_player_id(), parsed_name, guild_id, connection)
         return player
     def _add_alias(self, player_id, alias_name, guild_id, connection):
@@ -109,10 +115,13 @@ class PlayerFactory:
             if not player: raise ValueError(f"No player identity found for {old_name}.")
             existing = self._lookup(connection, """SELECT players.* FROM players JOIN player_aliases ON player_aliases.player_id = players.id WHERE player_aliases.guild_id = ? AND player_aliases.normalized_name = ?""", (str(guild_id), self.normalize_name(new_name)))
             if existing and existing.get_player_id() != player.get_player_id(): raise ValueError("The new name already belongs to a different player.")
+            canonical_name = self.strip_alliance_tags(new_name)
+            if not canonical_name:
+                raise ValueError("Player name cannot consist only of alliance tags.")
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            connection.execute("UPDATE players SET canonical_name = ?, updated_at = ? WHERE id = ?", (new_name, now, player.get_player_id()))
+            connection.execute("UPDATE players SET canonical_name = ?, updated_at = ? WHERE id = ?", (canonical_name, now, player.get_player_id()))
             self._add_alias(player.get_player_id(), new_name, guild_id, connection)
-            connection.commit(); player.set_canonical_name(new_name); player.set_updated_at(now); return player
+            connection.commit(); player.set_canonical_name(canonical_name); player.set_updated_at(now); return player
         finally: connection.close()
 
     def get_player_models(self, guild_id=None, limit=100):

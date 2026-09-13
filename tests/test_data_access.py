@@ -81,6 +81,42 @@ class BearTrapRepositoryTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(0, count)
 
+    def test_new_and_renamed_canonical_names_exclude_alliance_tags(self):
+        self.repository.setup()
+        connection = self.repository.connect()
+
+        player = self.repository.player_factory.resolve_player_model(
+            "[XuX] Example Player",
+            connection,
+            "guild",
+        )
+        connection.commit()
+
+        self.assertEqual("Example Player", player.get_canonical_name())
+        alias = connection.execute(
+            "SELECT alias_name, normalized_name FROM player_aliases WHERE player_id = ?",
+            (player.get_player_id(),),
+        ).fetchone()
+        self.assertEqual("[XuX] Example Player", alias["alias_name"])
+        self.assertEqual("example player", alias["normalized_name"])
+
+        renamed = self.repository.rename_player(
+            "Example Player",
+            "[XuX] Renamed Player",
+            "guild",
+        )
+        self.assertEqual("Renamed Player", renamed.get_canonical_name())
+
+    def test_player_name_cannot_consist_only_of_alliance_tags(self):
+        self.repository.setup()
+
+        with self.assertRaisesRegex(ValueError, "only of alliance tags"):
+            self.repository.player_factory.resolve_player_model(
+                "[XuX]",
+                self.repository.connect(),
+                "guild",
+            )
+
     def test_setup_rejects_an_outdated_schema_instead_of_migrating_it(self):
         os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
         connection = sqlite3.connect(self.database_path)
