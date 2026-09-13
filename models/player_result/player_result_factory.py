@@ -6,9 +6,6 @@ class PlayerResultFactory:
         connection = self._connection_factory()
         try:
             connection.execute("""CREATE TABLE IF NOT EXISTS player_results (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, player_id INTEGER, rank INTEGER NOT NULL, player_name TEXT NOT NULL, damage INTEGER NOT NULL, uncertain INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (event_id) REFERENCES events(id), FOREIGN KEY (player_id) REFERENCES players(id))""")
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(player_results)")}
-            if "player_id" not in columns: connection.execute("ALTER TABLE player_results ADD COLUMN player_id INTEGER")
-            if "uncertain" not in columns: connection.execute("ALTER TABLE player_results ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
             connection.commit()
         finally: connection.close()
     def get_player_result_models_by_event_id(self, event_id):

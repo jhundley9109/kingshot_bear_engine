@@ -29,10 +29,6 @@ class EventFactory:
                     created_at TEXT NOT NULL
                 )
             """)
-            columns = {row[1] for row in cursor.execute("PRAGMA table_info(events)")}
-            for name in ("event_time", "discord_message_id", "discord_channel_id", "discord_channel_name", "discord_guild_id", "discord_guild_name"):
-                if name not in columns:
-                    cursor.execute(f"ALTER TABLE events ADD COLUMN {name} TEXT")
             connection.commit()
         finally:
             connection.close()

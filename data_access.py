@@ -6,27 +6,107 @@ from models.event import EventFactory, EventModel
 from models.player import PlayerFactory
 from models.player_result import PlayerResultFactory, PlayerResultModel
 
+
+FINAL_SCHEMA_COLUMNS = {
+    "events": {
+        "id", "event_type", "event_date", "event_time", "rallies",
+        "alliance_damage", "submitted_by", "discord_message_id",
+        "discord_channel_id", "discord_channel_name", "discord_guild_id",
+        "discord_guild_name", "created_at",
+    },
+    "players": {"id", "canonical_name", "guild_id", "created_at", "updated_at"},
+    "player_aliases": {
+        "id", "player_id", "alias_name", "normalized_name", "visual_key",
+        "guild_id",
+    },
+    "player_results": {
+        "id", "event_id", "player_id", "rank", "player_name", "damage",
+        "uncertain",
+    },
+    "bear_recap_cache": {
+        "cache_key", "model", "event_count", "recap_text", "created_at",
+    },
+}
+
+
+class _PersistentConnection:
+    """Keep a repository-owned SQLite connection open across operations."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    @property
+    def row_factory(self):
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._connection.row_factory = value
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def close(self):
+        # Factories close connections they acquire. The repository owns this
+        # shared connection, so only BearTrapRepository.close() may close it.
+        # Roll back unfinished work to preserve the old per-operation close
+        # behavior when an operation exits with an exception.
+        if self._connection.in_transaction:
+            self._connection.rollback()
+
+    def shutdown(self):
+        self._connection.close()
+
+
 class BearTrapRepository:
     def __init__(self, database_path):
         self.database_path = database_path
+        self._connection = None
         self.event_factory = EventFactory(self.connect)
         self.player_factory = PlayerFactory(self.connect)
         self.player_result_factory = PlayerResultFactory(self.connect)
-    def connect(self): return sqlite3.connect(self.database_path)
-    def setup(self, legacy_guild_id=None, legacy_guild_name=None):
+
+    def connect(self):
+        if self._connection is None:
+            connection = sqlite3.connect(self.database_path, timeout=30)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            self._connection = _PersistentConnection(connection)
+        return self._connection
+
+    def close(self):
+        if self._connection is not None:
+            self._connection.shutdown()
+            self._connection = None
+
+    def setup(self):
         directory = os.path.dirname(self.database_path)
         if directory: os.makedirs(directory, exist_ok=True)
-        self.event_factory.setup_schema(); self._backfill_event_guilds(legacy_guild_id, legacy_guild_name); self.player_factory.setup_schema(legacy_guild_id); self.player_result_factory.setup_schema(); self._setup_recap_cache_schema(); self._backfill_player_ids()
-    def _backfill_event_guilds(self, guild_id, guild_name=None):
-        if guild_id is None: return
+        self.event_factory.setup_schema()
+        self.player_factory.setup_schema()
+        self.player_result_factory.setup_schema()
+        self._setup_recap_cache_schema()
+        self._validate_schema()
+
+    def _validate_schema(self):
         connection = self.connect()
-        try:
-            connection.execute("""UPDATE events
-                SET discord_guild_id = ?, discord_guild_name = ?
-                WHERE discord_guild_id IS NULL""",
-                (str(guild_id), guild_name))
-            connection.commit()
-        finally: connection.close()
+        problems = []
+        for table, required_columns in FINAL_SCHEMA_COLUMNS.items():
+            actual_columns = {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            missing_columns = sorted(required_columns - actual_columns)
+            if missing_columns:
+                problems.append(f"{table}: {', '.join(missing_columns)}")
+        if problems:
+            raise RuntimeError(
+                "Database schema is not current; missing columns: "
+                + "; ".join(problems)
+            )
+
     def _setup_recap_cache_schema(self):
         connection = self.connect()
         try:
@@ -37,18 +117,6 @@ class BearTrapRepository:
                 recap_text TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )""")
-            connection.commit()
-        finally: connection.close()
-    def _backfill_player_ids(self):
-        connection = self.connect(); connection.row_factory = sqlite3.Row
-        try:
-            rows = connection.execute("""SELECT player_results.id, player_results.player_name,
-                events.discord_guild_id FROM player_results
-                JOIN events ON events.id = player_results.event_id
-                WHERE player_results.player_id IS NULL""").fetchall()
-            for row in rows:
-                player = self.player_factory.resolve_player_model(row["player_name"], connection, row["discord_guild_id"])
-                connection.execute("UPDATE player_results SET player_id = ? WHERE id = ?", (player.get_player_id(), row["id"]))
             connection.commit()
         finally: connection.close()
     def find_existing_report(self, data, source_message):

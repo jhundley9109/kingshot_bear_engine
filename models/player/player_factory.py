@@ -21,7 +21,7 @@ class PlayerFactory:
     @classmethod
     def legacy_visual_key(cls, name):
         return cls.legacy_normalize_name(name).translate(str.maketrans({"o":"0", "i":"1", "l":"1"}))
-    def setup_schema(self, legacy_guild_id=None):
+    def setup_schema(self):
         connection = self._connection_factory()
         try:
             connection.executescript("""
@@ -43,40 +43,6 @@ class PlayerFactory:
                     UNIQUE(guild_id, normalized_name)
                 );
             """)
-            player_columns = {row[1] for row in connection.execute("PRAGMA table_info(players)")}
-            alias_columns = {row[1] for row in connection.execute("PRAGMA table_info(player_aliases)")}
-            if "guild_id" not in player_columns:
-                connection.execute("ALTER TABLE players ADD COLUMN guild_id TEXT")
-            if "guild_id" not in alias_columns:
-                connection.execute("ALTER TABLE player_aliases ADD COLUMN guild_id TEXT")
-            if legacy_guild_id is not None:
-                connection.execute("UPDATE players SET guild_id = ? WHERE guild_id IS NULL", (str(legacy_guild_id),))
-                connection.execute("""UPDATE player_aliases SET guild_id = (
-                    SELECT guild_id FROM players WHERE players.id = player_aliases.player_id
-                ) WHERE guild_id IS NULL""")
-            alias_sql = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'player_aliases'"
-            ).fetchone()[0]
-            compact_sql = "".join(alias_sql.lower().split())
-            if "unique(guild_id,normalized_name)" not in compact_sql:
-                connection.executescript("""
-                    ALTER TABLE player_aliases RENAME TO player_aliases_legacy;
-                    CREATE TABLE player_aliases (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        player_id INTEGER NOT NULL,
-                        alias_name TEXT NOT NULL,
-                        normalized_name TEXT NOT NULL,
-                        visual_key TEXT NOT NULL,
-                        guild_id TEXT NOT NULL,
-                        FOREIGN KEY (player_id) REFERENCES players(id),
-                        UNIQUE(guild_id, normalized_name)
-                    );
-                    INSERT INTO player_aliases
-                        (id, player_id, alias_name, normalized_name, visual_key, guild_id)
-                    SELECT id, player_id, alias_name, normalized_name, visual_key, guild_id
-                    FROM player_aliases_legacy;
-                    DROP TABLE player_aliases_legacy;
-                """)
             connection.commit()
         finally: connection.close()
     def _to_model(self, row):

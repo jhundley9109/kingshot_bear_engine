@@ -105,8 +105,11 @@ async def on_ready():
 
 
 def main():
-    repository.setup(GUILD_IDS[0])
-    bot.run(DISCORD_TOKEN)
+    repository.setup()
+    try:
+        bot.run(DISCORD_TOKEN)
+    finally:
+        repository.close()
 
 
 if __name__ == "__main__":
