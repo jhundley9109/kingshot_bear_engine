@@ -5,6 +5,7 @@ from services.discord_formatting import (
     discord_text_chunks,
     guild_scope_line,
     line_chunks,
+    paged_text_messages,
     player_result_context,
     table_name_cell,
     table_text,
@@ -42,6 +43,22 @@ class DiscordFormattingTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(chunks[0].startswith("Full report\nSummary"))
         self.assertTrue(chunks[1].startswith("Report continued"))
+
+    def test_paged_text_messages_accounts_for_headers_and_labels_pages(self):
+        messages = paged_text_messages(
+            "Bear recap heading",
+            " ".join(["performance"] * 80),
+            context_line="Guilds: **Example**",
+            page_body_limit=120,
+            max_length=180,
+        )
+
+        self.assertGreater(len(messages), 1)
+        self.assertTrue(all(len(message) <= 180 for message in messages))
+        self.assertIn(f"*Page 1 of {len(messages)}*", messages[0])
+        self.assertIn("Guilds: **Example**", messages[0])
+        self.assertIn(f"*Page 2 of {len(messages)}*", messages[1])
+        self.assertNotIn("Guilds: **Example**", messages[1])
 
     def test_table_helpers_sanitize_and_support_rtl_names(self):
         self.assertEqual(table_text("a`long-value", 8), "a'lon...")

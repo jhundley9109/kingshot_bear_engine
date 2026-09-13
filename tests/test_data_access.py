@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from data_access import BearTrapRepository
 
@@ -35,27 +36,40 @@ class BearTrapRepositoryTests(unittest.TestCase):
             {"events", "players", "player_aliases", "player_results", "bear_recap_cache"}
             <= tables
         )
+        connection.close()
         self.assertFalse(hasattr(self.repository, "_backfill_event_guilds"))
         self.assertFalse(hasattr(self.repository, "_backfill_player_ids"))
 
     def test_connection_is_reused_until_repository_is_closed(self):
         self.repository.setup()
         first = self.repository.connect()
+        underlying_connection = first._connection
+        first.close()
 
         # Factory methods still call close(), but that now releases an
         # operation without discarding the repository-owned connection.
         self.repository.fetch_events()
         second = self.repository.connect()
 
-        self.assertIs(first, second)
+        self.assertIs(underlying_connection, second._connection)
         self.assertEqual(1, second.execute("PRAGMA foreign_keys").fetchone()[0])
         self.assertEqual(30000, second.execute("PRAGMA busy_timeout").fetchone()[0])
         self.assertEqual("wal", second.execute("PRAGMA journal_mode").fetchone()[0])
+        second.close()
 
         self.repository.close()
         replacement = self.repository.connect()
-        self.assertIsNot(first, replacement)
+        self.assertIsNot(underlying_connection, replacement._connection)
         self.assertEqual(1, replacement.execute("SELECT 1").fetchone()[0])
+        replacement.close()
+
+    def test_connection_can_be_used_from_a_worker_thread(self):
+        self.repository.setup()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            players = executor.submit(self.repository.fetch_players, "guild").result()
+
+        self.assertEqual([], players)
 
     def test_operation_close_rolls_back_uncommitted_work(self):
         self.repository.setup()
@@ -76,9 +90,9 @@ class BearTrapRepositoryTests(unittest.TestCase):
 
         connection.close()
 
-        count = self.repository.connect().execute(
-            "SELECT COUNT(*) FROM events"
-        ).fetchone()[0]
+        verification = self.repository.connect()
+        count = verification.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        verification.close()
         self.assertEqual(0, count)
 
     def test_new_and_renamed_canonical_names_exclude_alliance_tags(self):
@@ -99,6 +113,7 @@ class BearTrapRepositoryTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual("[XuX] Example Player", alias["alias_name"])
         self.assertEqual("example player", alias["normalized_name"])
+        connection.close()
 
         renamed = self.repository.rename_player(
             "Example Player",
@@ -109,13 +124,17 @@ class BearTrapRepositoryTests(unittest.TestCase):
 
     def test_player_name_cannot_consist_only_of_alliance_tags(self):
         self.repository.setup()
+        connection = self.repository.connect()
 
-        with self.assertRaisesRegex(ValueError, "only of alliance tags"):
-            self.repository.player_factory.resolve_player_model(
-                "[XuX]",
-                self.repository.connect(),
-                "guild",
-            )
+        try:
+            with self.assertRaisesRegex(ValueError, "only of alliance tags"):
+                self.repository.player_factory.resolve_player_model(
+                    "[XuX]",
+                    connection,
+                    "guild",
+                )
+        finally:
+            connection.close()
 
     def test_setup_rejects_an_outdated_schema_instead_of_migrating_it(self):
         os.makedirs(os.path.dirname(self.database_path), exist_ok=True)

@@ -60,6 +60,48 @@ def discord_text_chunks(text, max_length=DISCORD_TEXT_CHUNK_LIMIT):
     return chunks
 
 
+def paged_text_messages(
+    heading,
+    text,
+    context_line=None,
+    page_body_limit=1200,
+    max_length=DISCORD_MESSAGE_LIMIT,
+):
+    """Build labeled message pages while accounting for heading length."""
+    page_label_reserve = "*Page 9999 of 9999*"
+    first_header_parts = [heading, page_label_reserve]
+    if context_line:
+        first_header_parts.append(context_line)
+    first_header_reserve = "\n".join(first_header_parts)
+    continued_header_reserve = f"{heading}\n{page_label_reserve}"
+    body_limit = min(
+        page_body_limit,
+        max_length - max(
+            len(first_header_reserve),
+            len(continued_header_reserve),
+        ) - 2,
+    )
+    if body_limit <= 0:
+        raise ValueError("The page heading is too long for a Discord message.")
+
+    body_chunks = discord_text_chunks(text, max_length=body_limit)
+    if not body_chunks:
+        return [heading if not context_line else f"{heading}\n{context_line}"]
+    if len(body_chunks) == 1:
+        header = heading if not context_line else f"{heading}\n{context_line}"
+        return [f"{header}\n\n{body_chunks[0]}"]
+
+    messages = []
+    page_count = len(body_chunks)
+    for index, body in enumerate(body_chunks, start=1):
+        header_parts = [heading, f"*Page {index} of {page_count}*"]
+        if index == 1 and context_line:
+            header_parts.append(context_line)
+        header = "\n".join(header_parts)
+        messages.append(f"{header}\n\n{body}")
+    return messages
+
+
 def line_chunks(
     initial_lines,
     rows,

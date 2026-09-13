@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 from models.event import EventFactory, EventModel
@@ -29,57 +30,80 @@ FINAL_SCHEMA_COLUMNS = {
 }
 
 
-class _PersistentConnection:
-    """Keep a repository-owned SQLite connection open across operations."""
+class _ConnectionLease:
+    """Serialize one complete operation on a shared SQLite connection."""
 
-    def __init__(self, connection):
+    def __init__(self, connection, lock):
         self._connection = connection
+        self._lock = lock
+        self._released = False
 
     @property
     def row_factory(self):
+        self._ensure_open()
         return self._connection.row_factory
 
     @row_factory.setter
     def row_factory(self, value):
+        self._ensure_open()
         self._connection.row_factory = value
 
     def __getattr__(self, name):
+        self._ensure_open()
         return getattr(self._connection, name)
 
-    def close(self):
-        # Factories close connections they acquire. The repository owns this
-        # shared connection, so only BearTrapRepository.close() may close it.
-        # Roll back unfinished work to preserve the old per-operation close
-        # behavior when an operation exits with an exception.
-        if self._connection.in_transaction:
-            self._connection.rollback()
+    def _ensure_open(self):
+        if self._released:
+            raise sqlite3.ProgrammingError("Cannot use a released database connection.")
 
-    def shutdown(self):
-        self._connection.close()
+    def close(self):
+        if self._released:
+            return
+        try:
+            # Preserve the old per-operation connection behavior when an
+            # operation exits without committing its transaction.
+            if self._connection.in_transaction:
+                self._connection.rollback()
+        finally:
+            self._released = True
+            self._lock.release()
 
 
 class BearTrapRepository:
     def __init__(self, database_path):
         self.database_path = database_path
         self._connection = None
+        self._connection_lock = threading.RLock()
         self.event_factory = EventFactory(self.connect)
         self.player_factory = PlayerFactory(self.connect)
         self.player_result_factory = PlayerResultFactory(self.connect)
 
     def connect(self):
-        if self._connection is None:
-            connection = sqlite3.connect(self.database_path, timeout=30)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA busy_timeout = 30000")
-            connection.execute("PRAGMA journal_mode = WAL")
-            self._connection = _PersistentConnection(connection)
-        return self._connection
+        self._connection_lock.acquire()
+        try:
+            if self._connection is None:
+                connection = sqlite3.connect(
+                    self.database_path,
+                    timeout=30,
+                    check_same_thread=False,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("PRAGMA busy_timeout = 30000")
+                connection.execute("PRAGMA journal_mode = WAL")
+                self._connection = connection
+            return _ConnectionLease(self._connection, self._connection_lock)
+        except Exception:
+            self._connection_lock.release()
+            raise
 
     def close(self):
-        if self._connection is not None:
-            self._connection.shutdown()
-            self._connection = None
+        with self._connection_lock:
+            if self._connection is not None:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                self._connection.close()
+                self._connection = None
 
     def setup(self):
         directory = os.path.dirname(self.database_path)
@@ -92,20 +116,23 @@ class BearTrapRepository:
 
     def _validate_schema(self):
         connection = self.connect()
-        problems = []
-        for table, required_columns in FINAL_SCHEMA_COLUMNS.items():
-            actual_columns = {
-                row["name"]
-                for row in connection.execute(f"PRAGMA table_info({table})")
-            }
-            missing_columns = sorted(required_columns - actual_columns)
-            if missing_columns:
-                problems.append(f"{table}: {', '.join(missing_columns)}")
-        if problems:
-            raise RuntimeError(
-                "Database schema is not current; missing columns: "
-                + "; ".join(problems)
-            )
+        try:
+            problems = []
+            for table, required_columns in FINAL_SCHEMA_COLUMNS.items():
+                actual_columns = {
+                    row["name"]
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+                missing_columns = sorted(required_columns - actual_columns)
+                if missing_columns:
+                    problems.append(f"{table}: {', '.join(missing_columns)}")
+            if problems:
+                raise RuntimeError(
+                    "Database schema is not current; missing columns: "
+                    + "; ".join(problems)
+                )
+        finally:
+            connection.close()
 
     def _setup_recap_cache_schema(self):
         connection = self.connect()

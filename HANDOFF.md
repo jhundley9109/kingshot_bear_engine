@@ -343,8 +343,9 @@ commands/
 
 `data_access.py` exposes the `BearTrapRepository`, which coordinates database writes across events, players, aliases, and player results.
 
-The repository keeps one SQLite connection open for the bot process, enables WAL
-mode and foreign-key enforcement, and closes the connection during bot shutdown.
+The repository keeps one SQLite connection open for the bot process, serializes
+complete database operations across worker threads, enables WAL mode and
+foreign-key enforcement, and closes the connection during bot shutdown.
 Startup creates the final schema when needed; it does not migrate or backfill
 legacy database contents.
 

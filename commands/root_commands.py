@@ -7,9 +7,9 @@ from services.discord_formatting import (
     channel_label,
     code_table_chunks,
     damage_text,
-    discord_text_chunks,
     guild_label,
     guild_scope_line,
+    paged_text_messages,
     table_name_cell,
 )
 from services.recap_service import (
@@ -268,15 +268,7 @@ def register_root_commands(
             f"🐻 **Bear Trap recap for {scope.label}** — latest "
             f"{len(source_events)} events ({cache_label})"
         )
-        chunks = discord_text_chunks(recap_text)
-        if all_servers:
-            guild_line = guild_scope_line(source_events)
-            await interaction.followup.send(
-                f"{heading}\n{guild_line}" if guild_line else heading
-            )
-            start_at = 0
-        else:
-            await interaction.followup.send(f"{heading}\n\n{chunks[0]}")
-            start_at = 1
-        for chunk in chunks[start_at:]:
-            await interaction.followup.send(chunk)
+        guild_line = guild_scope_line(source_events) if all_servers else None
+        pages = paged_text_messages(heading, recap_text, guild_line)
+        for page in pages:
+            await interaction.followup.send(page)
